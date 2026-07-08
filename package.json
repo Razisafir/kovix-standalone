@@ -8,13 +8,14 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "main": "dist/main/main.js",
+  "main": "dist/main/main.cjs",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "build:bundle": "esbuild src/main/main.ts --bundle --platform=node --format=cjs --outfile=dist/main/main.js --external:electron && esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --outfile=dist/preload/preload.js --external:electron",
+    "build:bundle": "esbuild src/main/main.ts --bundle --platform=node --format=cjs --outfile=dist/main/main.cjs --external:electron && esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --outfile=dist/preload/preload.cjs --external:electron",
     "verify": "tsx test/verify.ts",
+    "verify:refine": "tsx test/verify-refine.ts",
     "verify:hello": "tsx test/verify.ts --task \"create a file called hello.txt with the text 'test' in it\"",
-    "start": "npm run build && electron .",
+    "start": "npm run build:bundle && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {},

@@ -52,3 +52,10 @@ export {
     isInterpreterCommand,
     sanitiseForAuditLog,
 } from './security/index.js';
+export {
+    RefinementService,
+    type RefinementServiceConfig,
+    type RefinementTurn,
+    type RefinementSpec,
+    type RefinementResult,
+} from './refinement/index.js';
