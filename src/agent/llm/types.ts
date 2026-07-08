@@ -100,6 +100,19 @@ export interface IChatOptions {
     temperature?: number;
 }
 
+/**
+ * Provider type discriminator.
+ *
+ * The original VS Code fork had three categories: 'ollama' | 'xenova' | 'cloud'.
+ * The CloudProvider internally dispatched to 11+ cloud LLMs (Anthropic, OpenAI,
+ * OpenRouter, NVIDIA NIM, Together, Groq, LM Studio, LiteLLM, Mistral,
+ * DeepSeek, Gemini, custom) based on key prefix and baseUrl.
+ *
+ * In the standalone build we keep the same three top-level categories for
+ * the IConstructAIProvider.providerType discriminator (the agent loop and
+ * future UI switch on these), and let each cloud LLM identify itself via
+ * the LLMProvider type in cloudProvider.ts.
+ */
 export type AIProviderType = 'ollama' | 'xenova' | 'cloud';
 
 export enum ProviderStatus {

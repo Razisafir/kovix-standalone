@@ -1,15 +1,23 @@
 /**
  * Verification script - proves the extracted agent core runs standalone.
  *
- * Run with:
- *   # OpenRouter (free model, default):
- *   OPENROUTER_API_KEY=sk-or-v1-... npx tsx test/verify.ts
- *   # OpenRouter with a specific free model:
- *   OPENROUTER_API_KEY=sk-or-v1-... OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct:free npx tsx test/verify.ts
- *   # Anthropic (Claude):
+ * Usage:
+ *   # Auto-detect provider from env vars (priority: ANTHROPIC > OPENROUTER > NVIDIA > OLLAMA):
  *   ANTHROPIC_API_KEY=sk-ant-... npx tsx test/verify.ts
+ *   OPENROUTER_API_KEY=sk-or-v1-... npx tsx test/verify.ts
+ *   NVIDIA_API_KEY=nvapi-... npx tsx test/verify.ts
+ *   OLLAMA_BASE_URL=http://localhost:11434 npx tsx test/verify.ts
+ *
+ *   # Explicit provider via flag (overrides env detection):
+ *   npx tsx test/verify.ts --provider anthropic --api-key sk-ant-...
+ *   npx tsx test/verify.ts --provider ollama --base-url http://localhost:11434
+ *   npx tsx test/verify.ts --provider openrouter --api-key sk-or-v1-... --model meta-llama/llama-3.3-70b-instruct:free
+ *
  *   # Custom task:
- *   OPENROUTER_API_KEY=sk-or-v1-... npx tsx test/verify.ts --task "create a file called hello.txt with the text test in it"
+ *   npx tsx test/verify.ts --provider anthropic --api-key sk-ant-... --task "create a file called hello.txt with the text test in it"
+ *
+ *   # List all registered providers:
+ *   npx tsx test/verify.ts --list-providers
  *
  * What this proves (or fails to prove):
  *   1. The agent instantiates without VS Code's DI system
@@ -25,35 +33,119 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { AgentLoop, CloudProvider } from '../src/agent/index.js';
-import type { AgentLoopEvent } from '../src/agent/index.js';
+import { AgentLoop, createProvider, listProviders } from '../src/agent/index.js';
+import type { AgentLoopEvent, ProviderName } from '../src/agent/index.js';
 
 // ----------------------------------------------------------------------
 // Config
 // ----------------------------------------------------------------------
 
 const DEFAULT_TASK = 'create a file called hello.txt with the text test in it';
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
-// Default free OpenRouter model that supports tool calling.
-// Override with OPENROUTER_MODEL env var if you want a different one.
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL ?? 'meta-llama/llama-3.3-70b-instruct:free';
-const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
-// NVIDIA NIM (OpenAI-compatible). Free tier with 1000 credits/month.
-// Models that support tool calling:
-//   meta/llama-3.3-70b-instruct
-//   meta/llama-3.1-70b-instruct
-//   meta/llama-3.1-405b-instruct
-//   nvidia/llama-3.1-nemotron-70b-instruct
-//   qwen/qwen2.5-7b-instruct
-const NVIDIA_MODEL = process.env.NVIDIA_MODEL ?? 'meta/llama-3.3-70b-instruct';
-const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
 const WORKSPACE_DIR = path.resolve(process.cwd(), 'verify-workspace');
 
-// Parse --task argument
-const taskArgIdx = process.argv.indexOf('--task');
-const task = taskArgIdx >= 0 ? process.argv[taskArgIdx + 1] : DEFAULT_TASK;
+// Parse CLI args
+interface ParsedArgs {
+    provider?: string;
+    apiKey?: string;
+    model?: string;
+    baseUrl?: string;
+    task: string;
+    listProviders: boolean;
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
+    const result: ParsedArgs = { task: DEFAULT_TASK, listProviders: false };
+    for (let i = 2; i < argv.length; i++) {
+        const arg = argv[i];
+        const next = argv[i + 1];
+        switch (arg) {
+            case '--provider': result.provider = next; i++; break;
+            case '--api-key': result.apiKey = next; i++; break;
+            case '--model': result.model = next; i++; break;
+            case '--base-url': result.baseUrl = next; i++; break;
+            case '--task': result.task = next ?? DEFAULT_TASK; i++; break;
+            case '--list-providers': result.listProviders = true; break;
+        }
+    }
+    return result;
+}
+
+const args = parseArgs(process.argv);
+
+// --list-providers short-circuits everything else
+if (args.listProviders) {
+    console.log('=== Registered LLM Providers ===');
+    console.log('');
+    const providers = listProviders();
+    for (const p of providers) {
+        const verified = p.verified ? 'VERIFIED  ' : 'STUB      ';
+        const key = p.requiresApiKey ? 'needs-key' : 'no-key    ';
+        const offline = p.offline ? 'offline' : 'online ';
+        console.log(`  ${verified} ${key} ${offline}  ${p.name.padEnd(12)}  ${p.label}`);
+    }
+    console.log('');
+    console.log('VERIFIED  = end-to-end tested with a real LLM call (see docs/PHASE0_REPORT.md)');
+    console.log('STUB      = interface-ready, NOT tested with a real API call');
+    process.exit(0);
+}
+
+// ----------------------------------------------------------------------
+// Resolve provider config from CLI args + env vars
+// ----------------------------------------------------------------------
+
+function resolveProviderConfig(): { name: ProviderName; apiKey?: string; modelId?: string; baseUrl?: string; label: string } {
+    // 1. Explicit --provider flag wins
+    if (args.provider) {
+        const name = args.provider as ProviderName;
+        return {
+            name,
+            apiKey: args.apiKey,
+            modelId: args.model,
+            baseUrl: args.baseUrl,
+            label: `--provider ${name}`,
+        };
+    }
+
+    // 2. Auto-detect from env vars (priority: ANTHROPIC > OPENROUTER > NVIDIA > OLLAMA)
+    if (process.env.ANTHROPIC_API_KEY) {
+        return {
+            name: 'anthropic',
+            apiKey: process.env.ANTHROPIC_API_KEY,
+            modelId: args.model ?? 'claude-sonnet-4-20250514',
+            label: 'ANTHROPIC_API_KEY',
+        };
+    }
+    if (process.env.OPENROUTER_API_KEY) {
+        return {
+            name: 'openrouter',
+            apiKey: process.env.OPENROUTER_API_KEY,
+            modelId: args.model ?? process.env.OPENROUTER_MODEL ?? 'nvidia/nemotron-3-super-120b-a12b:free',
+            label: 'OPENROUTER_API_KEY',
+        };
+    }
+    if (process.env.NVIDIA_API_KEY) {
+        return {
+            name: 'nvidia',
+            apiKey: process.env.NVIDIA_API_KEY,
+            modelId: args.model ?? process.env.NVIDIA_MODEL ?? 'meta/llama-3.3-70b-instruct',
+            label: 'NVIDIA_API_KEY',
+        };
+    }
+    if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_MODEL) {
+        return {
+            name: 'ollama',
+            modelId: process.env.OLLAMA_MODEL,
+            baseUrl: process.env.OLLAMA_BASE_URL,
+            label: 'OLLAMA_BASE_URL / OLLAMA_MODEL',
+        };
+    }
+
+    // 3. Default: try Ollama (it's free, just needs to be running locally)
+    return {
+        name: 'ollama',
+        label: 'default (Ollama at localhost:11434)',
+    };
+}
 
 // ----------------------------------------------------------------------
 // Main
@@ -62,53 +154,59 @@ const task = taskArgIdx >= 0 ? process.argv[taskArgIdx + 1] : DEFAULT_TASK;
 async function main(): Promise<void> {
     console.log('=== Kovix Standalone Agent Verification ===');
     console.log('');
-    console.log('Task: ' + task);
+    console.log('Task: ' + args.task);
     console.log('Workspace: ' + WORKSPACE_DIR);
 
-    // Pick provider based on which key is set (priority: ANTHROPIC > NVIDIA > OPENROUTER)
-    let providerConfig: { apiKey: string; modelId: string; baseUrl?: string; provider?: 'anthropic' | 'openrouter' | 'nvidia' };
-    let providerLabel: string;
-    if (ANTHROPIC_API_KEY) {
-        providerConfig = { apiKey: ANTHROPIC_API_KEY, modelId: 'claude-sonnet-4-20250514' };
-        providerLabel = 'Anthropic (claude-sonnet-4)';
-    } else if (NVIDIA_API_KEY) {
-        providerConfig = {
-            apiKey: NVIDIA_API_KEY,
-            modelId: NVIDIA_MODEL,
-            baseUrl: NVIDIA_BASE_URL,
-            provider: 'nvidia',
-        };
-        providerLabel = 'NVIDIA NIM (' + NVIDIA_MODEL + ')';
-    } else if (OPENROUTER_API_KEY) {
-        providerConfig = {
-            apiKey: OPENROUTER_API_KEY,
-            modelId: OPENROUTER_MODEL,
-            baseUrl: OPENROUTER_BASE_URL,
-            provider: 'openrouter',
-        };
-        providerLabel = 'OpenRouter (' + OPENROUTER_MODEL + ')';
-    } else {
-        providerLabel = 'NOT SET';
-        providerConfig = { apiKey: '', modelId: '' };
-    }
+    const providerConfig = resolveProviderConfig();
+    console.log('Provider: ' + providerConfig.name + ' (' + providerConfig.label + ')');
 
     const maskedKey = providerConfig.apiKey
         ? providerConfig.apiKey.slice(0, 12) + '...' + providerConfig.apiKey.slice(-4)
-        : 'NOT SET';
-    console.log('Provider: ' + providerLabel);
+        : (providerConfig.name === 'ollama' ? 'not required' : 'NOT SET');
     console.log('API key: ' + maskedKey);
+    if (providerConfig.modelId) { console.log('Model: ' + providerConfig.modelId); }
+    if (providerConfig.baseUrl) { console.log('Base URL: ' + providerConfig.baseUrl); }
     console.log('');
 
-    if (!providerConfig.apiKey) {
-        console.error('FAIL: No API key found.');
-        console.error('Set one of:');
-        console.error('  NVIDIA_API_KEY=nvapi-...          (uses meta/llama-3.3-70b-instruct by default)');
-        console.error('  OPENROUTER_API_KEY=sk-or-v1-...  (uses a free model by default)');
-        console.error('  ANTHROPIC_API_KEY=sk-ant-...');
+    let provider;
+    try {
+        provider = createProvider({
+            name: providerConfig.name,
+            apiKey: providerConfig.apiKey,
+            modelId: providerConfig.modelId,
+            baseUrl: providerConfig.baseUrl,
+        });
+    } catch (err) {
+        console.error('FAIL: Could not create provider: ' + (err instanceof Error ? err.message : String(err)));
         console.error('');
-        console.error('Example:');
-        console.error('  NVIDIA_API_KEY=nvapi-... npx tsx test/verify.ts');
+        console.error('Available providers (use --list-providers for details):');
+        for (const p of listProviders()) {
+            console.error('  --provider ' + p.name + '  ' + (p.requiresApiKey ? '(needs --api-key)' : '(no key needed)'));
+        }
         process.exit(1);
+    }
+
+    // For Ollama, check status first and report clearly if it's not reachable
+    if (providerConfig.name === 'ollama') {
+        console.log('--- Checking Ollama status ---');
+        const status = await provider.checkStatus();
+        console.log('Ollama status: ' + status);
+        if (status !== 'available') {
+            console.log('');
+            console.log('Ollama is not available. To fix:');
+            console.log('  1. Install Ollama from https://ollama.com');
+            console.log('  2. Start the Ollama service (usually `ollama serve`)');
+            console.log('  3. Pull a model: `ollama pull llama3.1`');
+            console.log('  4. Re-run this script');
+            console.log('');
+            console.log('Or test with a cloud provider instead:');
+            console.log('  ANTHROPIC_API_KEY=sk-ant-... npx tsx test/verify.ts');
+            console.log('  OPENROUTER_API_KEY=sk-or-v1-... npx tsx test/verify.ts');
+            process.exit(1);
+        }
+        const activeModel = provider.getActiveModel();
+        console.log('Active model: ' + (activeModel?.id ?? 'none'));
+        console.log('');
     }
 
     // Set up a clean workspace
@@ -123,9 +221,6 @@ async function main(): Promise<void> {
     let approvalProposedContent = '';
     let fileWrittenBeforeApproval = false;
     let fileWrittenAfterApproval = false;
-
-    // Create the agent
-    const provider = new CloudProvider(providerConfig);
 
     const agent = new AgentLoop({
         aiProvider: provider,
@@ -171,7 +266,7 @@ async function main(): Promise<void> {
     console.log('=== PHASE 1: PLANNING ===');
     let plan;
     try {
-        plan = await agent.runPlanningPhase(task);
+        plan = await agent.runPlanningPhase(args.task);
     } catch (err) {
         console.error('PLANNING FAILED:', err instanceof Error ? err.message : String(err));
         process.exit(2);
@@ -199,7 +294,7 @@ async function main(): Promise<void> {
     let errorReceived: string | null = null;
 
     try {
-        const stream = agent.run(task);
+        const stream = agent.run(args.task);
         for await (const event of stream as AsyncIterable<AgentLoopEvent>) {
             eventCount++;
             logEvent(event);
@@ -259,6 +354,7 @@ async function main(): Promise<void> {
     console.log('');
     console.log('=== FINAL VERDICT ===');
 
+    const providerLabel = providerConfig.name + ' (' + providerConfig.label + ')';
     const checks: Array<{ name: string; pass: boolean; detail?: string }> = [
         { name: 'Agent instantiated (no VS Code DI)', pass: true },
         { name: 'Real LLM API call succeeded (' + providerLabel + ')', pass: plan.steps.length > 0 || plan.rawResponse.length > 0 },
@@ -281,7 +377,8 @@ async function main(): Promise<void> {
     console.log('');
     if (allPass) {
         console.log('=== ALL CHECKS PASSED ===');
-        console.log('The extracted agent core works standalone. Plan-Approve-Execute-Verify flow is real.');
+        console.log('The extracted agent core works standalone with ' + providerLabel + '.');
+        console.log('Plan-Approve-Execute-Verify flow is real.');
         process.exit(0);
     } else {
         console.log('=== SOME CHECKS FAILED ===');
@@ -300,15 +397,15 @@ function logEvent(event: AgentLoopEvent): void {
             console.log('  [tool_start] ' + event.toolName + ' (id=' + event.toolId + ')');
             break;
         case 'tool_executing':
-            const detail = event.detail ?? '';
-            console.log('  [tool_executing] ' + event.toolName + ': ' + detail);
+            console.log('  [tool_executing] ' + event.toolName + ': ' + (event.detail ?? ''));
             break;
-        case 'tool_result':
+        case 'tool_result': {
             const mark = event.success ? 'OK' : 'FAIL';
             console.log('  [tool_result] ' + event.toolName + ' ' + mark);
             const out = event.result.substring(0, 200).replace(/\n/g, '\n    ');
             console.log('    output: ' + out);
             break;
+        }
         case 'approval_request':
             console.log('');
             console.log('  [approval_request] ' + event.filePath);
@@ -320,15 +417,16 @@ function logEvent(event: AgentLoopEvent): void {
             console.log('');
             console.log('  [complete] ' + event.summary.substring(0, 200));
             break;
-        case 'error':
+        case 'error': {
             const tag = event.recoverable ? 'recoverable' : 'FATAL';
             console.log('');
             console.log('  [error ' + tag + '] ' + event.text);
             break;
+        }
         case 'verification_start':
             console.log('  [verification_start] ' + event.command);
             break;
-        case 'verification_result':
+        case 'verification_result': {
             const vmark = event.passed ? 'PASS' : 'FAIL';
             const unverified = event.unverified ? ' (unverified)' : '';
             console.log('  [verification_result] ' + vmark + unverified);
@@ -337,8 +435,9 @@ function logEvent(event: AgentLoopEvent): void {
                 console.log('    output: ' + vout);
             }
             break;
+        }
         default:
-            console.log('  [' + event.type + ']');
+            console.log('  [' + (event as { type: string }).type + ']');
     }
 }
 

@@ -4,6 +4,13 @@
 
 export { AgentLoop, type AgentLoopConfig } from './agentLoop.js';
 export { CloudProvider, type CloudProviderConfig, type LLMProvider } from './llm/cloudProvider.js';
+export { OllamaProvider, type OllamaProviderConfig } from './llm/ollamaProvider.js';
+export {
+    createProvider,
+    listProviders,
+    type ProviderName,
+    type CreateProviderOptions,
+} from './llm/providerFactory.js';
 export type {
     IConstructAIProvider,
     IChatMessage,
