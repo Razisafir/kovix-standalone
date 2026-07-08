@@ -1,0 +1,8 @@
+node_modules/
+dist/
+verify-workspace/
+test-staging-workspace/
+*.log
+.DS_Store
+.env
+.env.local
