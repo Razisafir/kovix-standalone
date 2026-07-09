@@ -3774,6 +3774,15 @@ const BUILD_MODE_HTML = `<!doctype html>
       const result = await kovixAPI.refine.start(ideaText);
       removeLoadingTurn();
       handleRefineResult(result);
+      // Reset the Start Refinement button. It was set to "Starting…" at the
+      // top of this function. The catch block resets it on error, but the
+      // success path previously did not — leaving the button permanently
+      // disabled with "Starting…" text. After "Start over" returned the user
+      // to the idea screen, the next Start Refinement click would resolve
+      // successfully (question/spec shown) but the button stayed stuck in
+      // the loading state, so the user could not start another refinement.
+      els.ideaStart.textContent = 'Start refinement';
+      updateIdeaStartEnabled();
     } catch (err) {
       removeLoadingTurn();
       showError(err.message || String(err));
