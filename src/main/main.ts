@@ -573,6 +573,26 @@ ipcMain.handle('kovix:spec:approve', async (): Promise<{ ok: boolean; spec: Refi
     return { ok: true, spec: session.spec };
 });
 
+/**
+ * Go back from the Spec screen to the Refine (conversation) screen.
+ * Clears the generated spec but keeps the refinement conversation
+ * (priorTurns) intact, so the user can continue steering the LLM and
+ * have it regenerate the spec. Only valid before the spec is approved —
+ * once approved, the spec is locked and the user must use plan:back from
+ * the Plan stage instead.
+ */
+ipcMain.handle('kovix:spec:back', async (): Promise<{ ok: boolean; error?: string }> => {
+    if (session.specApprovedAt !== null) {
+        return { ok: false, error: 'Spec is already approved. Go back from the Plan stage instead.' };
+    }
+    if (!session.spec) {
+        return { ok: false, error: 'No spec to go back from.' };
+    }
+    session.spec = null;
+    session.stage = 'refining';
+    return { ok: true };
+});
+
 // ---- Plan Generation ----
 
 /**
@@ -656,6 +676,31 @@ ipcMain.handle('kovix:plan:approve', async (): Promise<{ ok: boolean; error?: st
     // Initialize preflight with sensible defaults.
     session.preflight = defaultPreflightConfig(session.milestones);
     return { ok: true };
+});
+
+/**
+ * Go back from the Plan screen to the Spec screen. Un-approves the spec
+ * (so it becomes editable again) and clears the generated plan plus any
+ * preflight config. The user can edit the spec and re-approve to
+ * regenerate the plan. Only valid from the plan stage — once the plan is
+ * approved and execution configured, the user should use Start over.
+ */
+ipcMain.handle('kovix:plan:back', async (): Promise<{ ok: boolean; spec: RefinementSpec | null; error?: string }> => {
+    if (session.planApprovedAt !== null) {
+        return { ok: false, spec: session.spec, error: 'Plan is already approved. Use Start over to begin again.' };
+    }
+    if (session.specApprovedAt === null) {
+        return { ok: false, spec: session.spec, error: 'Spec is not approved — nothing to go back to.' };
+    }
+    // Un-approve the spec so it becomes editable again, and tear down the
+    // plan + preflight state so a re-approve regenerates cleanly.
+    session.specApprovedAt = null;
+    session.stage = 'spec';
+    session.planSummary = '';
+    session.milestones = [];
+    session.planApprovedAt = null;
+    session.preflight = null;
+    return { ok: true, spec: session.spec };
 });
 
 // ---- Pre-flight Config ----
@@ -3399,6 +3444,7 @@ const BUILD_MODE_HTML = `<!doctype html>
         <div id="spec-card" class="spec-card"></div>
         <div class="spec-actions">
           <button id="spec-restart" class="btn btn-secondary">Start over</button>
+          <button id="spec-back" class="btn btn-secondary">Back</button>
           <button id="spec-approve" class="btn btn-primary">Approve spec &amp; generate plan</button>
         </div>
       </section>
@@ -3413,6 +3459,7 @@ const BUILD_MODE_HTML = `<!doctype html>
         <div id="plan-milestones" class="plan-milestones"></div>
         <div class="spec-actions">
           <button id="plan-restart" class="btn btn-secondary">Start over</button>
+          <button id="plan-back" class="btn btn-secondary">Back</button>
           <button id="plan-approve" class="btn btn-primary">Approve plan &amp; continue</button>
         </div>
       </section>
@@ -3596,12 +3643,14 @@ const BUILD_MODE_HTML = `<!doctype html>
     answerSend: document.getElementById('answer-send'),
     specCard: document.getElementById('spec-card'),
     specRestart: document.getElementById('spec-restart'),
+    specBack: document.getElementById('spec-back'),
     specApprove: document.getElementById('spec-approve'),
     specLockedBanner: document.getElementById('spec-locked-banner'),
     // Plan
     planSummary: document.getElementById('plan-summary'),
     planMilestones: document.getElementById('plan-milestones'),
     planRestart: document.getElementById('plan-restart'),
+    planBack: document.getElementById('plan-back'),
     planApprove: document.getElementById('plan-approve'),
     // Preflight
     preflightModeGrid: document.getElementById('preflight-mode-grid'),
@@ -4015,6 +4064,27 @@ const BUILD_MODE_HTML = `<!doctype html>
     els.ideaInput.focus();
   });
 
+  els.specBack.addEventListener('click', async () => {
+    try {
+      const result = await kovixAPI.spec.back();
+      if (result.ok) {
+        // Drop the spec card — the conversation is still rendered, so the
+        // user can keep steering the LLM and have it regenerate the spec.
+        els.specCard.innerHTML = '';
+        currentSpec = null;
+        els.answerInput.value = '';
+        els.answerInput.disabled = false;
+        els.answerSend.disabled = false;
+        showState('refine');
+        els.answerInput.focus();
+      } else {
+        showError(result.error || 'Failed to go back.');
+      }
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  });
+
   els.specApprove.addEventListener('click', async () => {
     els.specApprove.disabled = true;
     els.specApprove.classList.add('btn-loading');
@@ -4157,6 +4227,30 @@ const BUILD_MODE_HTML = `<!doctype html>
     els.ideaStart.textContent = 'Start refinement';
     showState('idea');
     els.ideaInput.focus();
+  });
+
+  els.planBack.addEventListener('click', async () => {
+    try {
+      const result = await kovixAPI.plan.back();
+      if (result.ok && result.spec) {
+        // Re-render the spec as editable (unlocked) so the user can tweak
+        // it before re-approving. Reset the approve button in case it was
+        // left in a loading/disabled state from a prior interaction.
+        renderSpec(result.spec, { locked: false });
+        els.specApprove.disabled = false;
+        els.specApprove.classList.remove('btn-loading');
+        els.specApprove.textContent = 'Approve spec & generate plan';
+        // Tear down the plan UI so a re-approve regenerates cleanly.
+        els.planMilestones.innerHTML = '';
+        els.planSummary.textContent = '';
+        currentMilestones = [];
+        showState('spec');
+      } else if (!result.ok) {
+        showError(result.error || 'Failed to go back.');
+      }
+    } catch (err) {
+      showError(err.message || String(err));
+    }
   });
 
   els.planApprove.addEventListener('click', async () => {
