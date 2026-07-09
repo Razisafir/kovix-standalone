@@ -43,6 +43,9 @@ import {
     getSettingsPreview,
     resolveProviderConfig,
     PROVIDER_MODELS,
+    fetchProviderModels,
+    clearModelFetchCache,
+    type FetchedModels,
     type PersistedSettings,
     type SettingsPreview,
 } from './settingsStore.js';
@@ -255,8 +258,22 @@ ipcMain.handle('kovix:settings:get-preview', async (): Promise<SettingsPreview> 
     return await getSettingsPreview();
 });
 
-ipcMain.handle('kovix:settings:get-models', async (_event, providerName: string): Promise<string[]> => {
-    return PROVIDER_MODELS[providerName as ProviderName] ?? [];
+ipcMain.handle('kovix:settings:get-models', async (_event, providerName: string, apiKey?: string, baseUrl?: string): Promise<FetchedModels> => {
+    // Live fetch with graceful fallback. The renderer shows a loading state
+    // while we work, then displays either the live list or the fallback list
+    // (with a hint about which one). Pass the in-progress apiKey (what the
+    // user just typed but hasn't saved yet) so we can fetch with the new key
+    // without requiring a save first.
+    try {
+        return await fetchProviderModels(providerName, apiKey, { baseUrl });
+    } catch (err) {
+        console.error('[settings:get-models] fetch threw:', err instanceof Error ? err.message : String(err));
+        return {
+            models: PROVIDER_MODELS[providerName as ProviderName] ?? [],
+            source: 'fallback',
+            note: 'live fetch failed: ' + (err instanceof Error ? err.message : String(err)),
+        };
+    }
 });
 
 ipcMain.handle('kovix:settings:test', async (_event, config: TestConnectionInput): Promise<TestConnectionResult> => {
@@ -310,6 +327,9 @@ ipcMain.handle('kovix:settings:save', async (_event, config: { provider: string;
 
     // Invalidate cached provider so next refine/agent call uses the new config.
     invalidateProviderCache();
+    // Clear the model-list cache too — the next Settings open should refetch
+    // with the new key.
+    clearModelFetchCache();
 
     // Notify the renderer so it can refresh the topbar provider chip.
     try {
@@ -335,6 +355,7 @@ ipcMain.handle('kovix:settings:clear-key', async (): Promise<SettingsPreview> =>
     console.log('[settings] clear API key');
     await clearApiKey();
     invalidateProviderCache();
+    clearModelFetchCache();
     try {
         if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('kovix:provider-changed', 'No provider — open Settings');
@@ -3797,7 +3818,7 @@ const BUILD_MODE_HTML = `<!doctype html>
         <label class="field-label" for="set-model">Model</label>
         <input class="field-input" id="set-model" type="text" placeholder="(provider default)" list="set-model-list" autocomplete="off" spellcheck="false" />
         <datalist id="set-model-list"></datalist>
-        <div class="field-hint">Pick from the list or type a custom model ID. Leave blank for the provider default.</div>
+        <div class="field-hint" id="set-model-hint">Pick from the list or type a custom model ID. Leave blank for the provider default.</div>
       </div>
 
       <div class="field hidden" id="set-baseurl-field">
@@ -3890,6 +3911,7 @@ const BUILD_MODE_HTML = `<!doctype html>
     setApikeyHint: document.getElementById('set-apikey-hint'),
     setModel: document.getElementById('set-model'),
     setModelList: document.getElementById('set-model-list'),
+    setModelHint: document.getElementById('set-model-hint'),
     setBaseurlField: document.getElementById('set-baseurl-field'),
     setBaseurl: document.getElementById('set-baseurl'),
     setTestResult: document.getElementById('set-test-result'),
@@ -4803,13 +4825,32 @@ const BUILD_MODE_HTML = `<!doctype html>
     };
     els.setProviderHint.textContent = hints[providerName] || '';
 
-    // Populate model datalist
-    const models = await kovixAPI.settings.getModelsForProvider(providerName);
+    // Populate model datalist — show a loading hint while we fetch the live
+    // list. The fetch uses the in-progress apiKey (what the user has typed
+    // but not yet saved) so the model list updates immediately on key paste.
+    els.setModelHint.textContent = 'Loading model list...';
     els.setModelList.innerHTML = '';
+    const inProgressKey = els.setApikey.value.trim() || undefined;
+    const inProgressBaseUrl = els.setBaseurl.value.trim() || undefined;
+    let fetched;
+    try {
+      fetched = await kovixAPI.settings.getModelsForProvider(providerName, inProgressKey, inProgressBaseUrl);
+    } catch (err) {
+      fetched = { models: [], source: 'fallback', note: 'fetch failed: ' + (err.message || String(err)) };
+    }
+    const models = (fetched && fetched.models) ? fetched.models : [];
     for (const m of models) {
       const opt = document.createElement('option');
       opt.value = m;
       els.setModelList.appendChild(opt);
+    }
+    // Update the model hint to show where the list came from.
+    const sourceTag = fetched.source === 'live' ? 'live' : 'fallback';
+    const noteText = fetched.note ? ' (' + fetched.note + ')' : '';
+    if (models.length === 0) {
+      els.setModelHint.textContent = 'No models available.' + noteText + ' Type a custom model ID above.';
+    } else {
+      els.setModelHint.textContent = '[' + sourceTag + '] ' + models.length + ' models available.' + noteText;
     }
 
     // If preview has a model and provider matches, keep it; otherwise use first suggestion
@@ -4821,6 +4862,31 @@ const BUILD_MODE_HTML = `<!doctype html>
       els.setModel.value = '';
     }
   }
+
+  // When the user types/pastes an API key, re-fetch the model list so they
+  // see the live list as soon as the key is available. Debounced 500ms.
+  let apiKeyFetchTimer = null;
+  els.setApikey.addEventListener('input', () => {
+    if (apiKeyFetchTimer) { clearTimeout(apiKeyFetchTimer); }
+    apiKeyFetchTimer = setTimeout(() => {
+      // Only re-fetch if the field has enough characters to plausibly be a key.
+      const v = els.setApikey.value.trim();
+      if (v.length >= 8) {
+        updateProviderSpecificUI();
+      }
+    }, 500);
+  });
+  // Same for the base URL field (local providers like Ollama / LM Studio).
+  let baseUrlFetchTimer = null;
+  els.setBaseurl.addEventListener('input', () => {
+    if (baseUrlFetchTimer) { clearTimeout(baseUrlFetchTimer); }
+    baseUrlFetchTimer = setTimeout(() => {
+      const v = els.setBaseurl.value.trim();
+      if (v.length > 0) {
+        updateProviderSpecificUI();
+      }
+    }, 500);
+  });
 
   function showTestResult(kind, message, preview) {
     els.setTestResult.classList.remove('hidden', 'ok', 'fail', 'pending');

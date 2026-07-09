@@ -82,10 +82,14 @@ contextBridge.exposeInMainWorld('kovixAPI', {
          */
         clearApiKey: () => ipcRenderer.invoke('kovix:settings:clear-key'),
         /**
-         * Get the list of suggested model IDs for a provider. Used to
-         * populate the model picker dropdown.
+         * Get the list of model IDs for a provider. Prefers a LIVE fetch
+         * from the provider's /models endpoint (with the given apiKey if
+         * provided) and falls back to a hardcoded list on failure.
+         * Returns { models, source, note? } where source is 'live' or
+         * 'fallback' so the UI can show which one was used.
          */
-        getModelsForProvider: (provider: string) => ipcRenderer.invoke('kovix:settings:get-models', provider),
+        getModelsForProvider: (provider: string, apiKey?: string, baseUrl?: string) =>
+            ipcRenderer.invoke('kovix:settings:get-models', provider, apiKey, baseUrl),
     },
 
     // ---- Phase 2: Spec Approval / Plan / Pre-flight / Execute ----
