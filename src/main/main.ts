@@ -3374,10 +3374,10 @@ const BUILD_MODE_HTML = `<!doctype html>
     if (eventLog && eventLog.length > 0) {
       const logText = eventLog.map(e => {
         if (e.type === 'token') return e.text;
-        if (e.type === 'tool_start') return '\n[tool: ' + e.text + ']';
-        if (e.type === 'tool_result') return '\n[result: ' + e.text + ']';
-        if (e.type === 'file_written') return '\n[wrote: ' + e.text + ']';
-        return '\n[' + e.type + ']';
+        if (e.type === 'tool_start') return '\\n[tool: ' + e.text + ']';
+        if (e.type === 'tool_result') return '\\n[result: ' + e.text + ']';
+        if (e.type === 'file_written') return '\\n[wrote: ' + e.text + ']';
+        return '\\n[' + e.type + ']';
       }).join('');
       html += '<div class="milestone-event-log">' + escapeHtml(logText.trim()) + '</div>';
     }
