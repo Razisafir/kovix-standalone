@@ -3152,6 +3152,9 @@ const BUILD_MODE_HTML = `<!doctype html>
   <main>
     <div class="container">
 
+      <!-- STAGE INDICATOR (Phase 2 — always visible, shows current build stage) -->
+      <div class="stage-indicator" id="stage-indicator" aria-label="Build stage progress"></div>
+
       <!-- IDEA STATE -->
       <section id="state-idea" class="idea-screen">
         <div id="no-provider-banner" class="no-provider-banner hidden">
@@ -3383,6 +3386,7 @@ const BUILD_MODE_HTML = `<!doctype html>
 
   const els = {
     providerChip: document.getElementById('provider-chip'),
+    stageIndicator: document.getElementById('stage-indicator'),
     stateIdea: document.getElementById('state-idea'),
     stateRefine: document.getElementById('state-refine'),
     stateSpec: document.getElementById('state-spec'),
@@ -3473,6 +3477,53 @@ const BUILD_MODE_HTML = `<!doctype html>
   // --- State transitions ---
   // Maps our 7 build stages to the 7 section elements.
   const STAGES = ['idea', 'refine', 'spec', 'plan', 'preflight', 'execute', 'done'];
+  const STAGE_LABELS = {
+    idea: 'Idea',
+    refine: 'Refine',
+    spec: 'Spec',
+    plan: 'Plan',
+    preflight: 'Pre-flight',
+    execute: 'Execute',
+    done: 'Done',
+  };
+
+  // Build the stage indicator once. Structure:
+  //   [dot] Label  —  [dot] Label  —  ...  —  [dot] Label
+  function buildStageIndicator() {
+    const frag = document.createDocumentFragment();
+    STAGES.forEach((stage, i) => {
+      if (i > 0) {
+        const sep = document.createElement('span');
+        sep.className = 'stage-separator';
+        frag.appendChild(sep);
+      }
+      const dot = document.createElement('span');
+      dot.className = 'stage-dot';
+      dot.dataset.stage = stage;
+      frag.appendChild(dot);
+      const label = document.createElement('span');
+      label.className = 'stage-label';
+      label.dataset.stage = stage;
+      label.textContent = STAGE_LABELS[stage];
+      frag.appendChild(label);
+    });
+    els.stageIndicator.appendChild(frag);
+  }
+  buildStageIndicator();
+
+  function updateStageIndicator(currentStage) {
+    const currentIdx = STAGES.indexOf(currentStage);
+    els.stageIndicator.querySelectorAll('.stage-dot, .stage-label').forEach(el => {
+      const idx = STAGES.indexOf(el.dataset.stage);
+      el.classList.remove('active', 'done');
+      if (idx < currentIdx) {
+        el.classList.add('done');
+      } else if (idx === currentIdx) {
+        el.classList.add('active');
+      }
+    });
+  }
+
   function showState(name) {
     const map = {
       idea: els.stateIdea,
@@ -3486,6 +3537,7 @@ const BUILD_MODE_HTML = `<!doctype html>
     for (const [stage, el] of Object.entries(map)) {
       el.classList.toggle('hidden', stage !== name);
     }
+    updateStageIndicator(name);
   }
 
   // --- IDEA state ---
