@@ -3823,13 +3823,19 @@ const BUILD_MODE_HTML = `<!doctype html>
       const result = await kovixAPI.refine.start(ideaText);
       removeLoadingTurn();
       handleRefineResult(result);
-      // Reset the Start Refinement button. It was set to "Starting…" at the
-      // top of this function. The catch block resets it on error, but the
-      // success path previously did not — leaving the button permanently
-      // disabled with "Starting…" text. After "Start over" returned the user
-      // to the idea screen, the next Start Refinement click would resolve
-      // successfully (question/spec shown) but the button stayed stuck in
-      // the loading state, so the user could not start another refinement.
+      // Reset the Start Refinement button. The button was set to loading
+      // state at the top of this function (disabled + btn-loading class +
+      // "Starting…" text). The catch block resets all three on error, but
+      // the success path previously only reset the text — leaving the
+      // btn-loading CSS class on the button. That class sets
+      // pointer-events:none and shows a spinner, so even though the text
+      // said "Start refinement", the button was unclickable and appeared
+      // to still be loading. After "Start over" returned the user to the
+      // idea screen, the next Start Refinement click would resolve
+      // successfully but the spinner class was never removed, so the user
+      // could not start another refinement. Fix: remove btn-loading on
+      // the success path too.
+      els.ideaStart.classList.remove('btn-loading');
       els.ideaStart.textContent = 'Start refinement';
       updateIdeaStartEnabled();
     } catch (err) {
