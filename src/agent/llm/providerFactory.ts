@@ -11,10 +11,10 @@
 import type { IConstructAIProvider } from './types.js';
 import { CloudProvider, type CloudProviderConfig, type LLMProvider } from './cloudProvider.js';
 import { OllamaProvider, type OllamaProviderConfig } from './ollamaProvider.js';
+import { NvidiaNimProvider, type NvidiaNimProviderConfig } from './nvidiaProvider.js';
 import {
     OpenAIProvider,
     OpenRouterProvider,
-    NvidiaNimProvider,
     TogetherProvider,
     GroqProvider,
     MistralProvider,
@@ -106,10 +106,10 @@ const PROVIDER_REGISTRY: Record<ProviderName, ProviderRegistryEntry> = {
     },
     nvidia: {
         label: 'NVIDIA NIM',
-        verified: false,
+        verified: false, // BLOCKED on a real NIM API key — see test/verify-nvidia.ts
         requiresApiKey: true,
         offline: false,
-        create: (opts) => new NvidiaNimProvider({ apiKey: opts.apiKey ?? '', modelId: opts.modelId } satisfies CloudStubConfig),
+        create: (opts) => new NvidiaNimProvider({ apiKey: opts.apiKey ?? '', modelId: opts.modelId } satisfies NvidiaNimProviderConfig),
     },
     together: {
         label: 'Together AI',

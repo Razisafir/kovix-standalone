@@ -5,8 +5,11 @@
  *   - CloudProvider with Anthropic key → Anthropic Claude
  *   - OllamaProvider → local Ollama instance
  *
+ * INTERFACE-READY, BLOCKED on key for end-to-end verification:
+ *   - NvidiaNimProvider (see nvidiaProvider.ts + test/verify-nvidia.ts)
+ *
  * INTERFACE-READY, UNTESTED stubs (see stubProviders.ts):
- *   - OpenAIProvider, OpenRouterProvider, NvidiaNimProvider, TogetherProvider,
+ *   - OpenAIProvider, OpenRouterProvider, TogetherProvider,
  *     GroqProvider, MistralProvider, DeepSeekProvider, GeminiProvider,
  *     LmStudioProvider, LiteLLMProvider, XenovaProvider
  *
@@ -18,11 +21,13 @@
 export { CloudProvider, type CloudProviderConfig, type LLMProvider } from './cloudProvider.js';
 export { OllamaProvider, type OllamaProviderConfig } from './ollamaProvider.js';
 
+// NVIDIA NIM — dedicated class (BLOCKED on key for e2e verification)
+export { NvidiaNimProvider, type NvidiaNimProviderConfig, NVIDIA_NIM_BASE_URL, NVIDIA_NIM_DEFAULT_MODEL, NVIDIA_NIM_FALLBACK_MODELS } from './nvidiaProvider.js';
+
 // Stubs (interface-ready, untested)
 export {
     OpenAIProvider,
     OpenRouterProvider,
-    NvidiaNimProvider,
     TogetherProvider,
     GroqProvider,
     MistralProvider,

@@ -278,19 +278,40 @@ export async function resolveProviderConfig(): Promise<ResolvedProviderConfig | 
 /**
  * Default model IDs for each provider, ordered from most to least preferred.
  * The first entry is the default when the user picks a provider without
- * selecting a model. For Anthropic we list the user-specified production
- * defaults; for other providers we use the same defaults from the
- * Phase 0 / Task 9 factory.
+ * selecting a model. These lists are FALLBACKS — the Settings UI prefers
+ * the live list from `fetchProviderModels()` when one is available (e.g.
+ * OpenRouter's public /models endpoint, Anthropic's /v1/models with a key,
+ * Ollama's /api/tags when running locally, NVIDIA NIM's /v1/models with a
+ * key). When the live fetch fails or returns nothing, the UI falls back to
+ * the hardcoded list below.
+ *
+ * Refreshed 2025-Q4. Stale entries should still resolve to a working model
+ * — most providers accept model aliases — but you'll want to refresh the
+ * lists whenever a provider ships a new model generation.
  */
 export const PROVIDER_MODELS: Partial<Record<ProviderName, string[]>> = {
     anthropic: [
         'claude-sonnet-5',
-        'claude-opus-4-8',
+        'claude-opus-4-1-20250805',
+        'claude-opus-4-20250514',
         'claude-haiku-4-5-20251001',
+        'claude-3-7-sonnet-20250219',
+        'claude-3-5-sonnet-20241022',
+        'claude-3-5-haiku-20241022',
     ],
     openrouter: ['openai/gpt-oss-20b:free', 'nvidia/nemotron-3-super-120b-a12b:free'],
-    nvidia: ['meta/llama-3.3-70b-instruct'],
-    openai: ['gpt-4o', 'gpt-4o-mini'],
+    nvidia: [
+        'nvidia/llama-3.1-nemotron-70b-instruct',
+        'meta/llama-3.3-70b-instruct',
+        'meta/llama-3.1-70b-instruct',
+        'meta/llama-3.1-405b-instruct',
+        'meta/llama-3.1-8b-instruct',
+        'mistralai/mixtral-8x7b-instruct-v0.1',
+        'google/gemma-2-27b-it',
+        'qwen/qwen2.5-coder-32b-instruct',
+        'deepseek-ai/deepseek-r1',
+    ],
+    openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
     together: ['meta-llama/Llama-3.3-70B-Instruct-Turbo'],
     groq: ['llama-3.3-70b-versatile'],
     mistral: ['mistral-large-latest'],

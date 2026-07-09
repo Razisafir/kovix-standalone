@@ -141,21 +141,12 @@ export class OpenRouterProvider extends CloudStubProvider {
     isOffline(): boolean { return false; }
 }
 
-/**
- * NVIDIA NIM stub.
- *
- * Status: INTERFACE-READY, UNTESTED FROM USER'S NETWORK.
- * The endpoint (integrate.api.nvidia.com) was unreachable from the sandbox
- * during Phase 0. It may or may not be reachable from your machine — to
- * verify, get an nvapi-... key from build.nvidia.com and run verify.ts
- * with --provider nvidia.
- */
-export class NvidiaNimProvider extends CloudStubProvider {
-    constructor(config: CloudStubConfig) {
-        super('nvidia', 'https://integrate.api.nvidia.com/v1', 'meta/llama-3.3-70b-instruct', config);
-    }
-    isOffline(): boolean { return false; }
-}
+// NOTE: NVIDIA NIM has been promoted from a stub to a dedicated provider class
+// in `./nvidiaProvider.ts`. The dedicated class passes `provider: 'nvidia'`
+// to CloudProvider so the chatOpenAI path applies the
+// `parallel_tool_calls = false` workaround that NIM needs when tools are
+// present. Verification is still BLOCKED on a real NIM API key — see
+// test/verify-nvidia.ts and PROVIDERS.md.
 
 /**
  * Together AI stub.
