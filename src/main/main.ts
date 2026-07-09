@@ -2174,6 +2174,27 @@ const BUILD_MODE_HTML = `<!doctype html>
     cursor: not-allowed;
     opacity: 0.6;
   }
+  /* Loading state — adds a small spinner before the button text.
+     Toggled via the .btn-loading class. */
+  .btn-loading {
+    pointer-events: none;
+    position: relative;
+  }
+  .btn-loading::before {
+    content: '';
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: 7px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: btn-spin 0.6s linear infinite;
+    vertical-align: -2px;
+  }
+  @keyframes btn-spin {
+    to { transform: rotate(360deg); }
+  }
   .btn-secondary {
     background: var(--surface);
     color: var(--text);
@@ -2543,11 +2564,14 @@ const BUILD_MODE_HTML = `<!doctype html>
     border: 1px solid var(--border);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
-    padding: 18px 20px;
+    padding: 20px 24px;
     display: flex;
     gap: 14px;
     align-items: flex-start;
     transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .milestone-card:hover {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.07), 0 1px 3px rgba(0,0,0,0.05);
   }
   .milestone-card.is-major { border-left: 3px solid var(--accent); }
   .milestone-card.is-read { border-left: 3px solid var(--text-3); }
@@ -2726,6 +2750,10 @@ const BUILD_MODE_HTML = `<!doctype html>
     border-color: var(--accent);
     background: var(--accent-soft);
   }
+  .preflight-mode-option:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
   .preflight-mode-option input[type="radio"] {
     position: absolute;
     opacity: 0;
@@ -2777,6 +2805,9 @@ const BUILD_MODE_HTML = `<!doctype html>
     height: 22px;
   }
   .preflight-toggle input { opacity: 0; width: 0; height: 0; }
+  .preflight-toggle:focus-within .preflight-toggle-slider {
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
   .preflight-toggle-slider {
     position: absolute;
     cursor: pointer;
@@ -2864,8 +2895,9 @@ const BUILD_MODE_HTML = `<!doctype html>
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-wrap: wrap;
     gap: 6px;
-    padding: 0 0 12px;
+    padding: 0 0 20px;
     font-size: 12px;
     color: var(--text-3);
   }
@@ -2875,12 +2907,14 @@ const BUILD_MODE_HTML = `<!doctype html>
     border-radius: 50%;
     background: var(--border);
     transition: background 0.2s;
+    flex-shrink: 0;
   }
   .stage-dot.active { background: var(--accent); }
   .stage-dot.done { background: var(--success); }
   .stage-label {
     font-weight: 500;
     color: var(--text-3);
+    white-space: nowrap;
   }
   .stage-label.active { color: var(--accent-2); font-weight: 600; }
   .stage-label.done { color: var(--success); }
@@ -2888,6 +2922,7 @@ const BUILD_MODE_HTML = `<!doctype html>
     width: 16px;
     height: 1px;
     background: var(--border);
+    flex-shrink: 0;
   }
 
   /* ---- LOADING (Phase 2 — plan generation) ---- */
@@ -2924,6 +2959,14 @@ const BUILD_MODE_HTML = `<!doctype html>
     padding: 12px 14px;
     font-size: 14px;
     margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .error-banner > div:first-child {
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
   }
   .loading-dots {
     display: inline-flex;
@@ -3152,6 +3195,9 @@ const BUILD_MODE_HTML = `<!doctype html>
   <main>
     <div class="container">
 
+      <!-- STAGE INDICATOR (Phase 2 — always visible, shows current build stage) -->
+      <div class="stage-indicator" id="stage-indicator" aria-label="Build stage progress"></div>
+
       <!-- IDEA STATE -->
       <section id="state-idea" class="idea-screen">
         <div id="no-provider-banner" class="no-provider-banner hidden">
@@ -3168,6 +3214,7 @@ const BUILD_MODE_HTML = `<!doctype html>
           <label for="idea-input">Your idea</label>
           <textarea id="idea-input" placeholder="e.g. a tiny CLI tool that watches a folder and prints the names of files that change"></textarea>
           <div class="idea-card-actions">
+            <span class="answer-hint">Press <kbd>&#8984;</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> to start</span>
             <button id="idea-start" class="btn btn-primary" disabled>Start refinement</button>
           </div>
         </div>
@@ -3290,6 +3337,10 @@ const BUILD_MODE_HTML = `<!doctype html>
           <h2>Executing build</h2>
           <p id="execute-status-text">The agent is working through your milestones.</p>
         </div>
+        <div id="execute-error-banner" class="error-banner hidden" role="alert">
+          <div id="execute-error-text"></div>
+          <button id="execute-error-dismiss" class="btn btn-ghost" type="button">Dismiss</button>
+        </div>
         <div class="execute-progress-bar">
           <div id="execute-progress-fill" class="execute-progress-fill"></div>
         </div>
@@ -3383,6 +3434,7 @@ const BUILD_MODE_HTML = `<!doctype html>
 
   const els = {
     providerChip: document.getElementById('provider-chip'),
+    stageIndicator: document.getElementById('stage-indicator'),
     stateIdea: document.getElementById('state-idea'),
     stateRefine: document.getElementById('state-refine'),
     stateSpec: document.getElementById('state-spec'),
@@ -3415,6 +3467,9 @@ const BUILD_MODE_HTML = `<!doctype html>
     preflightConfirm: document.getElementById('preflight-confirm'),
     // Execute
     executeStatusText: document.getElementById('execute-status-text'),
+    executeErrorBanner: document.getElementById('execute-error-banner'),
+    executeErrorText: document.getElementById('execute-error-text'),
+    executeErrorDismiss: document.getElementById('execute-error-dismiss'),
     executeProgressFill: document.getElementById('execute-progress-fill'),
     executeProgressText: document.getElementById('execute-progress-text'),
     executeCreditsText: document.getElementById('execute-credits-text'),
@@ -3473,6 +3528,53 @@ const BUILD_MODE_HTML = `<!doctype html>
   // --- State transitions ---
   // Maps our 7 build stages to the 7 section elements.
   const STAGES = ['idea', 'refine', 'spec', 'plan', 'preflight', 'execute', 'done'];
+  const STAGE_LABELS = {
+    idea: 'Idea',
+    refine: 'Refine',
+    spec: 'Spec',
+    plan: 'Plan',
+    preflight: 'Pre-flight',
+    execute: 'Execute',
+    done: 'Done',
+  };
+
+  // Build the stage indicator once. Structure:
+  //   [dot] Label  —  [dot] Label  —  ...  —  [dot] Label
+  function buildStageIndicator() {
+    const frag = document.createDocumentFragment();
+    STAGES.forEach((stage, i) => {
+      if (i > 0) {
+        const sep = document.createElement('span');
+        sep.className = 'stage-separator';
+        frag.appendChild(sep);
+      }
+      const dot = document.createElement('span');
+      dot.className = 'stage-dot';
+      dot.dataset.stage = stage;
+      frag.appendChild(dot);
+      const label = document.createElement('span');
+      label.className = 'stage-label';
+      label.dataset.stage = stage;
+      label.textContent = STAGE_LABELS[stage];
+      frag.appendChild(label);
+    });
+    els.stageIndicator.appendChild(frag);
+  }
+  buildStageIndicator();
+
+  function updateStageIndicator(currentStage) {
+    const currentIdx = STAGES.indexOf(currentStage);
+    els.stageIndicator.querySelectorAll('.stage-dot, .stage-label').forEach(el => {
+      const idx = STAGES.indexOf(el.dataset.stage);
+      el.classList.remove('active', 'done');
+      if (idx < currentIdx) {
+        el.classList.add('done');
+      } else if (idx === currentIdx) {
+        el.classList.add('active');
+      }
+    });
+  }
+
   function showState(name) {
     const map = {
       idea: els.stateIdea,
@@ -3486,6 +3588,7 @@ const BUILD_MODE_HTML = `<!doctype html>
     for (const [stage, el] of Object.entries(map)) {
       el.classList.toggle('hidden', stage !== name);
     }
+    updateStageIndicator(name);
   }
 
   // --- IDEA state ---
@@ -3511,6 +3614,7 @@ const BUILD_MODE_HTML = `<!doctype html>
     const ideaText = els.ideaInput.value.trim();
     if (!ideaText) return;
     els.ideaStart.disabled = true;
+    els.ideaStart.classList.add('btn-loading');
     els.ideaStart.textContent = 'Starting…';
 
     // Reset conversation
@@ -3529,6 +3633,7 @@ const BUILD_MODE_HTML = `<!doctype html>
       removeLoadingTurn();
       showError(err.message || String(err));
       els.ideaStart.disabled = false;
+      els.ideaStart.classList.remove('btn-loading');
       els.ideaStart.textContent = 'Start refinement';
       showState('idea');
     }
@@ -3708,7 +3813,7 @@ const BUILD_MODE_HTML = `<!doctype html>
       if (items.length === 0) {
         const li = document.createElement('li');
         li.className = 'spec-empty';
-        li.textContent = '(no items — add one below)';
+        li.textContent = locked ? '(no items)' : '(no items — add one below)';
         ul.appendChild(li);
       }
 
@@ -3758,7 +3863,8 @@ const BUILD_MODE_HTML = `<!doctype html>
 
   els.specApprove.addEventListener('click', async () => {
     els.specApprove.disabled = true;
-    els.specApprove.textContent = 'Approving&hellip;';
+    els.specApprove.classList.add('btn-loading');
+    els.specApprove.textContent = 'Approving…';
     try {
       const result = await kovixAPI.spec.approve();
       if (result.ok && result.spec) {
@@ -3770,11 +3876,13 @@ const BUILD_MODE_HTML = `<!doctype html>
       } else {
         showError(result.error || 'Failed to approve spec.');
         els.specApprove.disabled = false;
+        els.specApprove.classList.remove('btn-loading');
         els.specApprove.textContent = 'Approve spec & generate plan';
       }
     } catch (err) {
       showError(err.message || String(err));
       els.specApprove.disabled = false;
+      els.specApprove.classList.remove('btn-loading');
       els.specApprove.textContent = 'Approve spec & generate plan';
     }
   });
@@ -3819,6 +3927,13 @@ const BUILD_MODE_HTML = `<!doctype html>
     currentMilestones = plan.milestones || [];
     els.planSummary.textContent = plan.summary || '';
     els.planMilestones.innerHTML = '';
+    if (currentMilestones.length === 0) {
+      els.planMilestones.innerHTML =
+        '<div class="loading-card">' +
+          '<div>The plan returned no milestones. You can go back and re-approve the spec, or retry plan generation.</div>' +
+        '</div>';
+      return;
+    }
     currentMilestones.forEach((m, i) => {
       els.planMilestones.appendChild(renderMilestoneCard(m, i, { stage: 'plan' }));
     });
@@ -3892,7 +4007,8 @@ const BUILD_MODE_HTML = `<!doctype html>
 
   els.planApprove.addEventListener('click', async () => {
     els.planApprove.disabled = true;
-    els.planApprove.textContent = 'Approving&hellip;';
+    els.planApprove.classList.add('btn-loading');
+    els.planApprove.textContent = 'Approving…';
     try {
       const result = await kovixAPI.plan.approve();
       if (result.ok) {
@@ -3907,6 +4023,7 @@ const BUILD_MODE_HTML = `<!doctype html>
       showError(err.message || String(err));
     } finally {
       els.planApprove.disabled = false;
+      els.planApprove.classList.remove('btn-loading');
       els.planApprove.textContent = 'Approve plan & continue';
     }
   });
@@ -3977,7 +4094,8 @@ const BUILD_MODE_HTML = `<!doctype html>
 
   els.preflightConfirm.addEventListener('click', async () => {
     els.preflightConfirm.disabled = true;
-    els.preflightConfirm.textContent = 'Starting&hellip;';
+    els.preflightConfirm.classList.add('btn-loading');
+    els.preflightConfirm.textContent = 'Starting…';
     try {
       const config = await gatherPreflightConfig();
       const saveResult = await kovixAPI.preflight.save(config);
@@ -3999,6 +4117,7 @@ const BUILD_MODE_HTML = `<!doctype html>
       showError(err.message || String(err));
     } finally {
       els.preflightConfirm.disabled = false;
+      els.preflightConfirm.classList.remove('btn-loading');
       els.preflightConfirm.textContent = 'Start execution';
     }
   });
@@ -4010,6 +4129,20 @@ const BUILD_MODE_HTML = `<!doctype html>
   let execTotalCredits = 0;
 
   function renderExecuteScreen() {
+    // Show a loading state immediately — getState() is async and the
+    // milestone list would otherwise be a blank hole for a beat.
+    els.executeMilestones.innerHTML =
+      '<div class="loading-card">' +
+        '<div class="loading-dots"><span></span><span></span><span></span></div>' +
+        '<div>Preparing milestones&hellip;</div>' +
+      '</div>';
+    els.executeErrorBanner.classList.add('hidden');
+    els.executeStatusText.textContent = 'The agent is working through your milestones.';
+    els.executeStatusText.style.color = '';
+    els.executeProgressFill.style.width = '0%';
+    els.executeProgressText.textContent = '0 / 0 milestones';
+    els.executeCreditsText.textContent = '~0 credits used';
+
     // Get the current session to populate milestone states
     kovixAPI.session.getState().then(state => {
       execMilestones = state.milestones || [];
@@ -4024,11 +4157,24 @@ const BUILD_MODE_HTML = `<!doctype html>
       }
       rerenderExecuteMilestones();
       updateExecuteProgress();
+    }).catch(err => {
+      els.executeMilestones.innerHTML =
+        '<div class="loading-card" style="color:var(--danger)">' +
+          '<div>Failed to load milestones: ' + escapeHtml(err.message || String(err)) + '</div>' +
+        '</div>';
     });
   }
 
   function rerenderExecuteMilestones() {
     els.executeMilestones.innerHTML = '';
+    if (execMilestones.length === 0) {
+      els.executeMilestones.innerHTML =
+        '<div class="loading-card">' +
+          '<div>No milestones to execute. The plan may have been empty.</div>' +
+        '</div>';
+      updateExecuteProgress();
+      return;
+    }
     execMilestones.forEach((m, i) => {
       const st = execMilestoneStates[m.id] || { status: 'pending', events: [] };
       const card = renderMilestoneCard(m, i, {
@@ -4066,9 +4212,17 @@ const BUILD_MODE_HTML = `<!doctype html>
     } else if (event.type === 'milestone_resumed') {
       els.executePauseBanner.classList.add('hidden');
     } else if (event.type === 'error') {
-      els.executeStatusText.textContent = 'Error: ' + event.text;
+      els.executeStatusText.textContent = 'The agent reported an error.';
       els.executeStatusText.style.color = 'var(--danger)';
+      els.executeErrorText.textContent = event.text || 'Unknown execution error.';
+      els.executeErrorBanner.classList.remove('hidden');
     }
+  });
+
+  els.executeErrorDismiss.addEventListener('click', () => {
+    els.executeErrorBanner.classList.add('hidden');
+    els.executeStatusText.textContent = 'The agent is working through your milestones.';
+    els.executeStatusText.style.color = '';
   });
 
   kovixAPI.exec.onStateUpdate((update) => {
@@ -4117,7 +4271,7 @@ const BUILD_MODE_HTML = `<!doctype html>
   els.execAbort.addEventListener('click', async () => {
     if (!confirm('Abort execution? This will stop the agent at the next yield point.')) return;
     await kovixAPI.exec.abort();
-    els.executeStatusText.textContent = 'Aborting&hellip;';
+    els.executeStatusText.textContent = 'Aborting…';
   });
 
   // --- DONE state ---
@@ -4135,6 +4289,11 @@ const BUILD_MODE_HTML = `<!doctype html>
     execTotalCredits = 0;
     els.executeStatusText.textContent = 'The agent is working through your milestones.';
     els.executeStatusText.style.color = '';
+    els.executeErrorBanner.classList.add('hidden');
+    els.executePauseBanner.classList.add('hidden');
+    els.executeProgressFill.style.width = '0%';
+    els.executeProgressText.textContent = '0 / 0 milestones';
+    els.executeCreditsText.textContent = '~0 credits used';
     updateIdeaStartEnabled();
     els.ideaStart.textContent = 'Start refinement';
     showState('idea');
@@ -4143,11 +4302,13 @@ const BUILD_MODE_HTML = `<!doctype html>
 
   // --- Error banner ---
   function showError(msg) {
-    const existing = document.querySelector('.error-banner');
+    const existing = document.querySelector('main .container > .error-banner');
     if (existing) existing.remove();
     const div = document.createElement('div');
     div.className = 'error-banner';
-    div.textContent = 'Error: ' + msg;
+    const text = document.createElement('div');
+    text.textContent = 'Error: ' + msg;
+    div.appendChild(text);
     document.querySelector('main .container').prepend(div);
     setTimeout(() => div.remove(), 8000);
   }
@@ -4199,11 +4360,23 @@ const BUILD_MODE_HTML = `<!doctype html>
     // Force reflow then add .open for the transition
     void els.settingsOverlay.offsetWidth;
     els.settingsOverlay.classList.add('open');
+    // Move focus into the modal so keyboard users don't have to Tab from
+    // the top of the page. Focus the provider select (or the first focusable
+    // field if the select is hidden for some reason).
+    setTimeout(() => {
+      if (els.setProvider.offsetParent !== null) {
+        els.setProvider.focus();
+      } else {
+        els.setCancel.focus();
+      }
+    }, 50);
   }
 
   function closeSettings() {
     els.settingsOverlay.classList.remove('open');
     setTimeout(() => els.settingsOverlay.classList.add('hidden'), 150);
+    // Return focus to the gear button so keyboard users keep their place.
+    els.gearBtn.focus();
   }
 
   async function updateProviderSpecificUI() {
@@ -4290,6 +4463,7 @@ const BUILD_MODE_HTML = `<!doctype html>
   els.setTest.addEventListener('click', async () => {
     hideTestResult();
     els.setTest.disabled = true;
+    els.setTest.classList.add('btn-loading');
     els.setTest.textContent = 'Testing…';
     showTestResult('pending', 'Making a minimal API call…', null);
     try {
@@ -4308,12 +4482,14 @@ const BUILD_MODE_HTML = `<!doctype html>
       showTestResult('fail', 'Test failed: ' + (err.message || String(err)), null);
     } finally {
       els.setTest.disabled = false;
+      els.setTest.classList.remove('btn-loading');
       els.setTest.textContent = 'Test connection';
     }
   });
 
   els.setSave.addEventListener('click', async () => {
     els.setSave.disabled = true;
+    els.setSave.classList.add('btn-loading');
     els.setSave.textContent = 'Saving…';
     try {
       const newPreview = await kovixAPI.settings.save({
@@ -4329,6 +4505,7 @@ const BUILD_MODE_HTML = `<!doctype html>
       showTestResult('fail', 'Save failed: ' + (err.message || String(err)), null);
     } finally {
       els.setSave.disabled = false;
+      els.setSave.classList.remove('btn-loading');
       els.setSave.textContent = 'Save';
     }
   });
