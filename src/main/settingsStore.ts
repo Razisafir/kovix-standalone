@@ -54,6 +54,13 @@ export interface PersistedSettings {
     apiKeyEnc?: string;
     /** Plaintext API key — ONLY used when safeStorage is unavailable. */
     apiKeyPlain?: string;
+    /**
+     * User-chosen workspace directory. When set, the execution agent writes
+     * build files into a subdirectory of this path (not the OS temp dir).
+     * Optional — when absent, the default (~/Documents/kovix-projects) is
+     * used. Additive field; no version bump needed (old files still parse).
+     */
+    workspaceDir?: string;
     /** When these settings were last saved (ISO timestamp). */
     savedAt?: string;
 }
