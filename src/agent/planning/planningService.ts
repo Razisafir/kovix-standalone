@@ -50,6 +50,7 @@ import type {
     AIStreamEvent,
 } from '../llm/types.js';
 import type { RefinementSpec } from '../refinement/refinementService.js';
+import { principlesBlock } from '../agentPrinciples.js';
 
 // ----------------------------------------------------------------------
 // Public types
@@ -192,7 +193,8 @@ ${specBlock}
 ORIGINAL IDEA (for context):
   ${ideaText}
 
-Output ONLY the \`emit_plan\` tool call. No preamble, no explanation.`;
+Output ONLY the \`emit_plan\` tool call. No preamble, no explanation.
+${principlesBlock()}`;
 }
 
 // ----------------------------------------------------------------------

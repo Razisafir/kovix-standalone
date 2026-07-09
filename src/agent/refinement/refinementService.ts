@@ -36,6 +36,7 @@ import type {
     IToolDefinition,
     AIStreamEvent,
 } from '../llm/types.js';
+import { principlesBlock } from '../agentPrinciples.js';
 
 // ----------------------------------------------------------------------
 // Public types
@@ -191,7 +192,8 @@ EXAMPLE OF A GOOD emit_spec CALL:
 CURRENT STATE:
 - Question/answer rounds so far: ${currentTurn}
 - Minimum before finalize: ${minTurns}
-- Hard cap: ${maxTurns}`;
+- Hard cap: ${maxTurns}
+${principlesBlock()}`;
 
     if (forceFinalize) {
         return base + `

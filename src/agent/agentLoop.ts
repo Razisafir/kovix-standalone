@@ -61,6 +61,7 @@ import {
 } from './tools/index.js';
 import { PendingChanges } from './staging/pendingChanges.js';
 import { TerminalRateLimiter } from './security/index.js';
+import { principlesBlock } from './agentPrinciples.js';
 
 const MAX_ROUNDS = 50;
 
@@ -710,7 +711,8 @@ Ponytail discipline (DEFAULT: full):
   YAGNI ladder applies — stdlib before deps, native before custom, one line before
   fifty. Don't introduce unrequested abstractions. If the user didn't ask for a
   framework, plugin system, or config layer, don't add one. Escalate to bigger
-  architecture only when the task explicitly requires it.`;
+  architecture only when the task explicitly requires it.
+${principlesBlock()}`;
     }
 
     private parsePlan(response: string): IPlanStep[] {
