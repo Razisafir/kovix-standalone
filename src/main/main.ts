@@ -2564,11 +2564,14 @@ const BUILD_MODE_HTML = `<!doctype html>
     border: 1px solid var(--border);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
-    padding: 18px 20px;
+    padding: 20px 24px;
     display: flex;
     gap: 14px;
     align-items: flex-start;
     transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .milestone-card:hover {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.07), 0 1px 3px rgba(0,0,0,0.05);
   }
   .milestone-card.is-major { border-left: 3px solid var(--accent); }
   .milestone-card.is-read { border-left: 3px solid var(--text-3); }
@@ -2885,8 +2888,9 @@ const BUILD_MODE_HTML = `<!doctype html>
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-wrap: wrap;
     gap: 6px;
-    padding: 0 0 12px;
+    padding: 0 0 20px;
     font-size: 12px;
     color: var(--text-3);
   }
@@ -2896,12 +2900,14 @@ const BUILD_MODE_HTML = `<!doctype html>
     border-radius: 50%;
     background: var(--border);
     transition: background 0.2s;
+    flex-shrink: 0;
   }
   .stage-dot.active { background: var(--accent); }
   .stage-dot.done { background: var(--success); }
   .stage-label {
     font-weight: 500;
     color: var(--text-3);
+    white-space: nowrap;
   }
   .stage-label.active { color: var(--accent-2); font-weight: 600; }
   .stage-label.done { color: var(--success); }
@@ -2909,6 +2915,7 @@ const BUILD_MODE_HTML = `<!doctype html>
     width: 16px;
     height: 1px;
     background: var(--border);
+    flex-shrink: 0;
   }
 
   /* ---- LOADING (Phase 2 — plan generation) ---- */
