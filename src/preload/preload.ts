@@ -144,11 +144,22 @@ contextBridge.exposeInMainWorld('kovixAPI', {
     exec: {
         /** Start execution. Returns immediately; events come via onEvent/onStateUpdate/onComplete. */
         start: () => ipcRenderer.invoke('kovix:exec:start'),
+        /**
+         * Start the lead agent. Same return contract as exec.start, but
+         * iterates milestones via LeadAgentService (sequential fresh-worker
+         * dispatch) instead of AgentLoop.runWithApprovedPlan (one shared
+         * loop). Lead/worker events flow via onLeadEvent.
+         */
+        startLead: () => ipcRenderer.invoke('kovix:exec:start-lead'),
         /** Resume from a milestone pause. */
         resume: () => ipcRenderer.invoke('kovix:exec:resume'),
         /** Skip the current milestone (only valid when paused). */
         skip: () => ipcRenderer.invoke('kovix:exec:skip'),
-        /** Abort execution. */
+        /** Resume a lead-agent pause. */
+        leadResume: () => ipcRenderer.invoke('kovix:exec:lead-resume'),
+        /** Skip the current lead-agent paused milestone. */
+        leadSkip: () => ipcRenderer.invoke('kovix:exec:lead-skip'),
+        /** Abort execution. Works for both legacy and lead paths. */
         abort: () => ipcRenderer.invoke('kovix:exec:abort'),
         /** Register a callback for streaming exec events. Returns unsubscribe. */
         onEvent: (callback: (event: unknown) => void) => {
@@ -167,6 +178,17 @@ contextBridge.exposeInMainWorld('kovixAPI', {
             const listener = (_event: unknown, data: unknown) => callback(data);
             ipcRenderer.on('kovix:exec:complete', listener);
             return () => ipcRenderer.removeListener('kovix:exec:complete', listener);
+        },
+        /**
+         * Register a callback for lead-agent events (lead_reviewing,
+         * worker_started, worker_completed, lead_blocked, etc.). The
+         * renderer uses these to render the lead/worker visual structure
+         * on the Execute screen.
+         */
+        onLeadEvent: (callback: (event: unknown) => void) => {
+            const listener = (_event: unknown, data: unknown) => callback(data);
+            ipcRenderer.on('kovix:exec:lead-event', listener);
+            return () => ipcRenderer.removeListener('kovix:exec:lead-event', listener);
         },
     },
 

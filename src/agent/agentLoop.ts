@@ -596,11 +596,24 @@ export class AgentLoop {
     }
 
     /**
+     * PUBLIC verification entry point — used by the LeadAgentService to run
+     * the harness check after a worker completes its milestone. The lead
+     * calls worker.run() to execute the milestone, then worker.verifyNow()
+     * to confirm the worker's "done" claim.
+     *
+     * Returns the same stream as the private runVerification() — yields
+     * verification_start + verification_result events.
+     */
+    async *verifyNow(signal?: AbortSignal): AsyncGenerator<AgentLoopEvent> {
+        yield* this.runVerification(signal);
+    }
+
+    /**
      * Phase 1.2 — Real verification harness.
      * Runs a harness-controlled check (NOT an LLM-controlled one) to confirm
      * the agent's "done" claim.
      */
-    private async *runVerification(): AsyncGenerator<AgentLoopEvent> {
+    private async *runVerification(signal?: AbortSignal): AsyncGenerator<AgentLoopEvent> {
         // Check for package.json with a test/build/typecheck script
         const path = await import('node:path');
         const fs = await import('node:fs/promises');

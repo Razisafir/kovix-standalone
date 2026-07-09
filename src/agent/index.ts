@@ -66,3 +66,9 @@ export {
     type MilestoneType,
     type PlanResult,
 } from './planning/index.js';
+export {
+    LeadAgentService,
+    type LeadAgentConfig,
+    type LeadAgentEvent,
+    type WorkerReport,
+} from './leadAgent/leadAgentService.js';
