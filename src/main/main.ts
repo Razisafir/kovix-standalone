@@ -15,8 +15,9 @@
  * The UI's settings screen is the primary way to configure providers.
  */
 
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import {
     AgentLoop,
     createProvider,
@@ -340,6 +341,123 @@ ipcMain.handle('kovix:settings:clear-key', async (): Promise<SettingsPreview> =>
         }
     } catch { /* ignore */ }
     return await getSettingsPreview();
+});
+
+// ----------------------------------------------------------------------
+// Workspace directory — user-chosen folder where the execution agent writes
+// build files. Persisted in the settings file alongside provider config.
+// Defaults to ~/Documents/kovix-projects when not explicitly set.
+// ----------------------------------------------------------------------
+
+/**
+ * Resolve the effective workspace directory. If the user has chosen a
+ * directory via the picker, that path is used. Otherwise, fall back to a
+ * sensible default: a "kovix-projects" folder in the user's Documents
+ * directory (created on first use). Never returns an empty string.
+ */
+async function getEffectiveWorkspaceDir(): Promise<string> {
+    const settings = await loadSettings();
+    if (settings?.workspaceDir && settings.workspaceDir.trim().length > 0) {
+        return settings.workspaceDir.trim();
+    }
+    // Default: ~/Documents/kovix-projects
+    const docsPath = path.join(app.getPath('documents') || app.getPath('home'), 'kovix-projects');
+    try {
+        const fs = await import('node:fs/promises');
+        await fs.mkdir(docsPath, { recursive: true });
+    } catch (err) {
+        console.warn('[workspace] Failed to create default workspace dir:', err);
+    }
+    return docsPath;
+}
+
+/**
+ * Persist the workspace directory to the settings file. Merges with
+ * existing settings so provider config is preserved.
+ */
+async function persistWorkspaceDir(dir: string): Promise<void> {
+    const existing = await loadSettings();
+    const settings = {
+        version: 1 as const,
+        provider: existing?.provider ?? null,
+        modelId: existing?.modelId,
+        baseUrl: existing?.baseUrl,
+        apiKeyEnc: existing?.apiKeyEnc,
+        apiKeyPlain: existing?.apiKeyPlain,
+        workspaceDir: dir,
+        savedAt: new Date().toISOString(),
+    };
+    await saveSettings(settings);
+}
+
+/**
+ * Return the current workspace directory (or the default if not set) to
+ * the renderer. The renderer shows this path in the UI.
+ */
+ipcMain.handle('kovix:workspace:get', async (): Promise<{ dir: string; isDefault: boolean }> => {
+    const settings = await loadSettings();
+    const isDefault = !settings?.workspaceDir || settings.workspaceDir.trim().length === 0;
+    const dir = await getEffectiveWorkspaceDir();
+    return { dir, isDefault };
+});
+
+/**
+ * Open the OS directory picker so the user can choose a workspace folder.
+ * On confirm, persists the choice and broadcasts the change to the
+ * renderer. Returns the chosen path (or null if cancelled).
+ */
+ipcMain.handle('kovix:workspace:pick', async (): Promise<{ dir: string | null; error?: string }> => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        return { dir: null, error: 'No window available for dialog.' };
+    }
+    const currentDir = await getEffectiveWorkspaceDir();
+    const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Choose workspace folder',
+        defaultPath: currentDir,
+        properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+        return { dir: null };
+    }
+    const chosen = result.filePaths[0];
+    try {
+        await persistWorkspaceDir(chosen);
+        console.log('[workspace] user chose:', chosen);
+        // Broadcast the change so all UI panels can refresh their indicator.
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('kovix:workspace-changed', chosen);
+        }
+        return { dir: chosen };
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[workspace] Failed to persist workspace dir:', msg);
+        return { dir: null, error: msg };
+    }
+});
+
+/**
+ * Open a folder in the OS file explorer. Used by the "Open folder" button
+ * on the Done/Execute screens. Accepts a path argument so it can open
+ * either the workspace root or a specific build subdirectory.
+ */
+ipcMain.handle('kovix:workspace:open', async (_event, dirToOpen?: string): Promise<{ ok: boolean; error?: string }> => {
+    const target = dirToOpen || await getEffectiveWorkspaceDir();
+    if (!target) {
+        return { ok: false, error: 'No directory to open.' };
+    }
+    try {
+        const errorMessage = await shell.openPath(target);
+        if (errorMessage) {
+            // shell.openPath returns an error string on failure, empty string on success.
+            return { ok: false, error: errorMessage };
+        }
+        console.log('[workspace] opened folder:', target);
+        return { ok: true };
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[workspace] Failed to open folder:', msg);
+        return { ok: false, error: msg };
+    }
 });
 
 // ----------------------------------------------------------------------
@@ -897,17 +1015,20 @@ ipcMain.handle('kovix:exec:start', async (): Promise<{ ok: boolean; error?: stri
     //     disk write just happens immediately. A future "manual approval"
     //     preflight toggle would change this to a renderer-driven callback.)
     //   - approveInterpreterCommand: true (same — auto-approve, but logged)
-    //   - workspaceRoot: a per-build workspace under the OS temp dir so we
-    //     don't trash the user's actual project. Phase 2 verification confirms
-    //     files appear there.
+    //   - workspaceRoot: a per-build subdirectory under the user-chosen
+    //     workspace folder (default ~/Documents/kovix-projects). Each build
+    //     gets its own timestamped folder so builds don't overwrite each other.
+    //     The path is shown in the UI and openable via the "Open folder" button.
     const cfg = await getProviderConfig();
     const provider = createProvider(cfg);
 
-    // Per-build workspace: kovix-builds/<timestamp>/. This is where the
-    // agent's writes land. It's NOT the kovix-standalone repo itself.
-    const os = await import('node:os');
+    // Per-build workspace: <workspaceDir>/build-<timestamp>/. Uses the
+    // user-chosen workspace directory (persisted in settings) instead of
+    // the OS temp dir, so the user knows exactly where files land and can
+    // find them easily.
     const fs = await import('node:fs/promises');
-    const buildDir = path.join(os.tmpdir(), 'kovix-builds', 'build-' + Date.now());
+    const workspaceBase = await getEffectiveWorkspaceDir();
+    const buildDir = path.join(workspaceBase, 'build-' + Date.now());
     await fs.mkdir(buildDir, { recursive: true });
     console.log('[kovix:exec] build workspace:', buildDir);
 
@@ -2219,6 +2340,47 @@ const BUILD_MODE_HTML = `<!doctype html>
     border: 1px solid var(--border);
     cursor: default;
   }
+  .workspace-chip {
+    font-size: 12px;
+    color: var(--text-3);
+    background: var(--surface-2);
+    padding: 4px 6px 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 420px;
+  }
+  .workspace-chip-label {
+    white-space: nowrap;
+  }
+  .workspace-chip-path {
+    font-family: var(--font-mono);
+    color: var(--text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 280px;
+  }
+  .workspace-chip-btn {
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .workspace-chip-btn:hover {
+    background: var(--surface-3);
+  }
+  .workspace-chip-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
   .topbar-right {
     display: flex;
     align-items: center;
@@ -3373,6 +3535,11 @@ const BUILD_MODE_HTML = `<!doctype html>
     </div>
     <div class="topbar-right">
       <div class="provider-chip" id="provider-chip" title="Active provider">—</div>
+      <div class="workspace-chip" id="workspace-chip" title="Workspace folder — where build files land">
+        <span class="workspace-chip-label">Workspace:</span>
+        <span class="workspace-chip-path" id="workspace-chip-path">—</span>
+        <button class="workspace-chip-btn" id="workspace-change-btn" title="Change workspace folder" type="button">Change</button>
+      </div>
       <button class="gear-btn" id="gear-btn" title="Provider settings" aria-label="Open provider settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"></circle>
@@ -3561,6 +3728,7 @@ const BUILD_MODE_HTML = `<!doctype html>
         <div id="done-summary" class="done-summary"></div>
         <div id="done-build-dir" class="done-build-dir"></div>
         <div class="spec-actions">
+          <button id="done-open-folder" class="btn btn-secondary" disabled>Open folder</button>
           <button id="done-restart" class="btn btn-primary">Start a new build</button>
         </div>
       </section>
@@ -3626,6 +3794,8 @@ const BUILD_MODE_HTML = `<!doctype html>
 
   const els = {
     providerChip: document.getElementById('provider-chip'),
+    workspaceChipPath: document.getElementById('workspace-chip-path'),
+    workspaceChangeBtn: document.getElementById('workspace-change-btn'),
     stageIndicator: document.getElementById('stage-indicator'),
     stateIdea: document.getElementById('state-idea'),
     stateRefine: document.getElementById('state-refine'),
@@ -3676,6 +3846,7 @@ const BUILD_MODE_HTML = `<!doctype html>
     // Done
     doneSummary: document.getElementById('done-summary'),
     doneBuildDir: document.getElementById('done-build-dir'),
+    doneOpenFolder: document.getElementById('done-open-folder'),
     doneRestart: document.getElementById('done-restart'),
     // Settings
     noProviderBanner: document.getElementById('no-provider-banner'),
@@ -3718,6 +3889,46 @@ const BUILD_MODE_HTML = `<!doctype html>
   }
   refreshProviderChip();
   kovixAPI.onProviderChanged(refreshProviderChip);
+
+  // --- Workspace chip ---
+  // Shows the current workspace folder (where build files land) and a
+  // "Change" button that opens the OS directory picker. The chip updates
+  // whenever the workspace changes (via the kovix:workspace-changed event
+  // fired from the main process after the user picks a new folder).
+  async function refreshWorkspaceChip() {
+    try {
+      const result = await kovixAPI.workspace.get();
+      const dir = result.dir || '(not set)';
+      // Truncate long paths in the middle for display: /home/.../kovix-projects
+      const display = dir.length > 50 ? dir.slice(0, 20) + '…' + dir.slice(-28) : dir;
+      els.workspaceChipPath.textContent = display;
+      els.workspaceChipPath.title = dir + (result.isDefault ? ' (default)' : '');
+    } catch (err) {
+      els.workspaceChipPath.textContent = '(error)';
+      console.error('[workspace] Failed to get workspace dir:', err);
+    }
+  }
+  refreshWorkspaceChip();
+  kovixAPI.workspace.onChanged(refreshWorkspaceChip);
+
+  els.workspaceChangeBtn.addEventListener('click', async () => {
+    els.workspaceChangeBtn.disabled = true;
+    els.workspaceChangeBtn.textContent = '…';
+    try {
+      const result = await kovixAPI.workspace.pick();
+      if (result.error) {
+        showError(result.error);
+      }
+      // refreshWorkspaceChip will be called via the onChanged event, but
+      // also call it directly in case the event hasn't fired yet.
+      await refreshWorkspaceChip();
+    } catch (err) {
+      showError(err.message || String(err));
+    } finally {
+      els.workspaceChangeBtn.disabled = false;
+      els.workspaceChangeBtn.textContent = 'Change';
+    }
+  });
 
   // --- State transitions ---
   // Maps our 7 build stages to the 7 section elements.
@@ -4494,12 +4705,17 @@ const BUILD_MODE_HTML = `<!doctype html>
     rerenderExecuteMilestones();
   });
 
+  // Track the last build directory so the "Open folder" button knows which
+  // folder to open. Set by exec:onComplete, cleared on Start Over.
+  let lastBuildDir = null;
+
   kovixAPI.exec.onComplete((result) => {
     els.executePauseBanner.classList.add('hidden');
     els.executeStatusText.textContent = 'Build complete.';
     // Show the done screen
     const summary = result.summary || 'Build finished.';
     const buildDir = result.buildDir || '(unknown)';
+    lastBuildDir = typeof buildDir === 'string' && buildDir !== '(unknown)' ? buildDir : null;
     const approvalNote = result.approvalFired
       ? 'Staging layer fired the approval callback ' + (result.fileWrittenBeforeApproval ? 'but VIOLATION: file was on disk before approval!' : 'and correctly blocked writes until approval.')
       : 'No file-write approvals were fired (the agent may not have written any files).';
@@ -4509,7 +4725,24 @@ const BUILD_MODE_HTML = `<!doctype html>
       '<div style="font-size:12px;opacity:0.85">' + escapeHtml(approvalNote) + '</div>' +
       '<div style="font-size:12px;opacity:0.85;margin-top:4px">Credits used: ~' + (result.totalCreditsUsed || 0) + '</div>';
     els.doneBuildDir.textContent = 'Build workspace: ' + buildDir;
+    // Enable the "Open folder" button only if we have a real build dir.
+    els.doneOpenFolder.disabled = !lastBuildDir;
     showState('done');
+  });
+
+  els.doneOpenFolder.addEventListener('click', async () => {
+    const target = lastBuildDir || null;
+    try {
+      els.doneOpenFolder.disabled = true;
+      const result = await kovixAPI.workspace.open(target || undefined);
+      if (!result.ok && result.error) {
+        showError(result.error);
+      }
+    } catch (err) {
+      showError(err.message || String(err));
+    } finally {
+      els.doneOpenFolder.disabled = !lastBuildDir;
+    }
   });
 
   els.execResume.addEventListener('click', async () => {
@@ -4548,6 +4781,8 @@ const BUILD_MODE_HTML = `<!doctype html>
     els.executeProgressFill.style.width = '0%';
     els.executeProgressText.textContent = '0 / 0 milestones';
     els.executeCreditsText.textContent = '~0 credits used';
+    lastBuildDir = null;
+    els.doneOpenFolder.disabled = true;
     updateIdeaStartEnabled();
     els.ideaStart.textContent = 'Start refinement';
     showState('idea');

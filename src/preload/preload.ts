@@ -88,6 +88,22 @@ contextBridge.exposeInMainWorld('kovixAPI', {
         getModelsForProvider: (provider: string) => ipcRenderer.invoke('kovix:settings:get-models', provider),
     },
 
+    // ---- Workspace directory (where build files land) ----
+    workspace: {
+        /** Get the current workspace directory (or the default if not set). */
+        get: () => ipcRenderer.invoke('kovix:workspace:get'),
+        /** Open the OS directory picker and persist the user's choice. Returns the chosen path or null. */
+        pick: () => ipcRenderer.invoke('kovix:workspace:pick'),
+        /** Open a folder in the OS file explorer. Pass a path to open a specific folder, or omit to open the workspace root. */
+        open: (dir?: string) => ipcRenderer.invoke('kovix:workspace:open', dir),
+        /** Register a callback invoked when the workspace dir changes (e.g. after the user picks a new folder). */
+        onChanged: (callback: (dir: string) => void) => {
+            const listener = (_event: unknown, dir: string) => callback(dir);
+            ipcRenderer.on('kovix:workspace-changed', listener);
+            return () => ipcRenderer.removeListener('kovix:workspace-changed', listener);
+        },
+    },
+
     // ---- Phase 2: Spec Approval / Plan / Pre-flight / Execute ----
     session: {
         /** Get the current build session state (stage, spec, plan, preflight, execution). */
