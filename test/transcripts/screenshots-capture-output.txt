@@ -1,0 +1,53 @@
+[capture] Xvfb ready on :77
+[capture] restarting Xvfb before Anthropic capture...
+[capture] capturing screenshots/settings-anthropic-models.png ...
+[renderer] ANTHROPIC_MODEL_HINT=[fallback] 7 models available.
+[renderer] ANTHROPIC_MODEL_OPT_COUNT=7
+[renderer] ANTHROPIC_MODELS_BEGIN
+[renderer]   claude-sonnet-5
+[renderer]   claude-opus-4-1-20250805
+[renderer]   claude-opus-4-20250514
+[renderer]   claude-haiku-4-5-20251001
+[renderer]   claude-3-7-sonnet-20250219
+[renderer]   claude-3-5-sonnet-20241022
+[renderer]   claude-3-5-haiku-20241022
+[renderer] ANTHROPIC_MODELS_END
+[kovix] screenshot script result: "anthropic ready"
+[kovix] screenshot saved: screenshots/settings-anthropic-models.png
+  saved (52876 bytes)
+[capture] restarting Xvfb before OpenRouter capture...
+[capture] capturing screenshots/settings-openrouter-free-models.png ...
+[renderer] OPENROUTER_MODEL_HINT=[live] 23 models available. (live fetch — filtered to 23 :free models (out of 340 total))
+[renderer] OPENROUTER_MODEL_OPT_COUNT=23
+[renderer] OPENROUTER_MODELS_BEGIN
+[renderer]   cognitivecomputations/dolphin-mistral-24b-venice-edition:free
+[renderer]   cohere/north-mini-code:free
+[renderer]   google/gemma-4-26b-a4b-it:free
+[renderer]   google/gemma-4-31b-it:free
+[renderer]   liquid/lfm-2.5-1.2b-instruct:free
+[renderer]   liquid/lfm-2.5-1.2b-thinking:free
+[renderer]   meta-llama/llama-3.2-3b-instruct:free
+[renderer]   meta-llama/llama-3.3-70b-instruct:free
+[renderer]   nousresearch/hermes-3-llama-3.1-405b:free
+[renderer]   nvidia/nemotron-3-nano-30b-a3b:free
+[renderer]   nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+[renderer]   nvidia/nemotron-3-super-120b-a12b:free
+[renderer]   nvidia/nemotron-3-ultra-550b-a55b:free
+[renderer]   nvidia/nemotron-3.5-content-safety:free
+[renderer]   nvidia/nemotron-nano-12b-v2-vl:free
+[renderer]   nvidia/nemotron-nano-9b-v2:free
+[renderer]   openai/gpt-oss-120b:free
+[renderer]   openai/gpt-oss-20b:free
+[renderer]   poolside/laguna-m.1:free
+[renderer]   poolside/laguna-xs-2.1:free
+[renderer]   qwen/qwen3-coder:free
+[renderer]   qwen/qwen3-next-80b-a3b-instruct:free
+[renderer]   tencent/hy3:free
+[renderer] OPENROUTER_MODELS_END
+[kovix] screenshot script result: "openrouter ready"
+[kovix] screenshot saved: screenshots/settings-openrouter-free-models.png
+  saved (54578 bytes)
+
+[capture] final screenshots:
+-rw-rw-r-- 1 z z 52876 Jul  9 16:45 screenshots/settings-anthropic-models.png
+-rw-rw-r-- 1 z z 54578 Jul  9 16:45 screenshots/settings-openrouter-free-models.png
