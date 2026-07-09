@@ -2750,6 +2750,10 @@ const BUILD_MODE_HTML = `<!doctype html>
     border-color: var(--accent);
     background: var(--accent-soft);
   }
+  .preflight-mode-option:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
   .preflight-mode-option input[type="radio"] {
     position: absolute;
     opacity: 0;
@@ -2801,6 +2805,9 @@ const BUILD_MODE_HTML = `<!doctype html>
     height: 22px;
   }
   .preflight-toggle input { opacity: 0; width: 0; height: 0; }
+  .preflight-toggle:focus-within .preflight-toggle-slider {
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
   .preflight-toggle-slider {
     position: absolute;
     cursor: pointer;
