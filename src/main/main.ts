@@ -26,6 +26,7 @@ import {
 } from '../agent/index.js';
 import type {
     AgentLoopEvent,
+    AIStreamEvent,
     ProviderName,
     RefinementResult,
     RefinementTurn,
@@ -1193,6 +1194,31 @@ app.whenReady().then(async () => {
         return;
     }
 
+    // KOVIX_VERIFY_NVIDIA=1: NVIDIA NIM provider verification. Makes ONE
+    // minimal real chat call ("say hello in one word") against the NVIDIA
+    // NIM endpoint using the configured key. Prints the full request +
+    // response transcript. Exits 0 on success, 2 if no NVIDIA key is
+    // configured (honest BLOCKED), 3 on provider error. Used by
+    // test/verify-nvidia.ts.
+    if (process.env.KOVIX_VERIFY_NVIDIA === '1') {
+        let nvidiaExit = 0;
+        try {
+            await runNvidiaVerification();
+            nvidiaExit = typeof process.exitCode === 'number' ? process.exitCode : 0;
+        } catch (err) {
+            console.error('[verify-nvidia] FATAL:', err instanceof Error ? err.stack ?? err.message : String(err));
+            nvidiaExit = 1;
+        } finally {
+            // app.exit(code) terminates with the given code immediately.
+            // app.quit() would let Electron's natural shutdown run but
+            // tends to collapse to exit code 0 even when process.exitCode
+            // is set — which would mask the BLOCKED/FAILED state from
+            // the wrapper script.
+            app.exit(nvidiaExit);
+        }
+        return;
+    }
+
     createWindow();
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
@@ -2070,6 +2096,228 @@ async function runEndToEndVerification(): Promise<void> {
         console.log('>>> SOME CHECKS FAILED — see above <<<');
         process.exitCode = 5;
     }
+}
+
+/**
+ * NVIDIA NIM provider verification. Makes ONE minimal real chat call against
+ * the NVIDIA NIM endpoint using the configured key. Prints the full request
+ * + response transcript. Exits 0 on success, 2 if no NVIDIA key is
+ * configured (honest BLOCKED), 3 on provider error.
+ *
+ * Triggered by KOVIX_VERIFY_NVIDIA=1 — used by test/verify-nvidia.ts.
+ *
+ * HONESTY CONTRACT
+ * ----------------
+ * This function NEVER invents or reuses a credential. It reads the NVIDIA
+ * key from the settings store (the same path the UI writes to) or, as a
+ * dev fallback, from the NVIDIA_API_KEY env var. If neither is available,
+ * it FAILS HONESTLY with a BLOCKED message and the exact user steps.
+ */
+async function runNvidiaVerification(): Promise<void> {
+    console.log('=== Kovix — NVIDIA NIM Provider Verification ===');
+    console.log('');
+    console.log('Goal: make ONE real chat call to https://integrate.api.nvidia.com/v1/chat/completions');
+    console.log('Prompt: "say hello in one word" (max_tokens=16, temperature=0)');
+    console.log('');
+
+    // Resolve provider config (settings store → env fallback).
+    const cfg = await resolveProviderConfig();
+
+    // Reject anything that isn't NVIDIA. (If the user has Anthropic configured,
+    // they should run verify-settings.ts instead. We don't silently swap.)
+    if (!cfg || cfg.name !== 'nvidia') {
+        // Special case: NVIDIA_API_KEY env var present but settings store has a
+        // different provider. In that case the env-var path inside
+        // resolveProviderConfig only returns nvidia if NO higher-priority env
+        // var (ANTHROPIC_API_KEY, OPENROUTER_API_KEY) is set. So we also
+        // explicitly check NVIDIA_API_KEY here and let the user override.
+        if (process.env.NVIDIA_API_KEY) {
+            console.log('Provider: nvidia (source: env NVIDIA_API_KEY)');
+            console.log('  (settings store has provider="' + (cfg?.name ?? 'null') + '" — env NVIDIA_API_KEY wins for this verify run)');
+            console.log('');
+            return runNvidiaVerificationWithKey(
+                process.env.NVIDIA_API_KEY,
+                process.env.KOVIX_MODEL ?? process.env.NVIDIA_MODEL ?? 'meta/llama-3.3-70b-instruct',
+                'env (NVIDIA_API_KEY)',
+            );
+        }
+        console.error('BLOCKED: NVIDIA NIM provider is not configured.');
+        console.error('');
+        console.error('  Current settings provider: ' + (cfg?.name ?? '(none — defaults to ollama)'));
+        console.error('');
+        console.error('  To verify NVIDIA NIM end-to-end, do ONE of the following on your machine:');
+        console.error('');
+        console.error('  Option A — via the UI (recommended):');
+        console.error('    1. Run:  npm start');
+        console.error('    2. Click the gear icon (top-right) to open Settings');
+        console.error('    3. Pick "NVIDIA NIM (unverified)" from the Provider dropdown');
+        console.error('    4. Paste your nvapi-... API key (get one at https://build.nvidia.com)');
+        console.error('    5. Pick a model (e.g. meta/llama-3.3-70b-instruct)');
+        console.error('    6. Click "Test connection" — should succeed');
+        console.error('    7. Click "Save", then close the window');
+        console.error('    8. Run:  npm run verify:nvidia');
+        console.error('');
+        console.error('  Option B — via env var (dev shortcut, no UI needed):');
+        console.error('    NVIDIA_API_KEY=nvapi-... npm run verify:nvidia');
+        console.error('');
+        console.error('  (Per project rules: this script NEVER hardcodes or asks for a key.)');
+        process.exitCode = 2;
+        return;
+    }
+
+    // We have a NVIDIA config — but the key may still be missing if the
+    // settings store has a stale provider entry without a key.
+    if (!cfg.apiKey) {
+        console.error('BLOCKED: NVIDIA NIM provider is configured but no API key is stored.');
+        console.error('');
+        console.error('  Open the UI (npm start), click the gear icon, paste your nvapi-... key,');
+        console.error('  Test connection, Save, close the window. Then re-run this script.');
+        console.error('  (Or: NVIDIA_API_KEY=nvapi-... npm run verify:nvidia)');
+        process.exitCode = 2;
+        return;
+    }
+
+    return runNvidiaVerificationWithKey(cfg.apiKey, cfg.modelId ?? 'meta/llama-3.3-70b-instruct', cfg.source);
+}
+
+/**
+ * Inner verify: we have a real NVIDIA key + model. Make the call, print the
+ * transcript, set exit code.
+ */
+async function runNvidiaVerificationWithKey(apiKey: string, modelId: string, source: string): Promise<void> {
+    const masked = apiKey.length > 8
+        ? apiKey.slice(0, 4) + '...' + apiKey.slice(-4)
+        : '(short key)';
+    console.log('=== NVIDIA CONFIG ===');
+    console.log('Provider: nvidia (source: ' + source + ')');
+    console.log('API key:  ' + masked);
+    console.log('Model:    ' + modelId);
+    console.log('Endpoint: https://integrate.api.nvidia.com/v1/chat/completions');
+    console.log('');
+
+    // Build the provider via the factory — same path the agent loop uses.
+    let provider;
+    try {
+        provider = createProvider({
+            name: 'nvidia',
+            apiKey,
+            modelId,
+        });
+    } catch (err) {
+        console.error('FAIL: Could not create NVIDIA provider: ' + (err instanceof Error ? err.message : String(err)));
+        process.exitCode = 1;
+        return;
+    }
+
+    // Print the request body the provider will send (modulo the auth header
+    // value, which we redact). This is the "transcript" the task asks for.
+    const requestBody = {
+        model: modelId,
+        messages: [{ role: 'user', content: 'say hello in one word' }],
+        stream: true,
+        max_tokens: 16,
+        temperature: 0,
+    };
+    console.log('=== REQUEST ===');
+    console.log('POST https://integrate.api.nvidia.com/v1/chat/completions');
+    console.log('Headers:');
+    console.log('  Authorization: Bearer ' + masked);
+    console.log('  Content-Type: application/json');
+    console.log('Body:');
+    console.log(JSON.stringify(requestBody, null, 2));
+    console.log('');
+
+    // Hard timeout — 20 seconds. NVIDIA NIM should respond well within that.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+
+    const transcript: string[] = [];
+    let firstError: string | null = null;
+    let gotDone = false;
+    let gotAnyEvent = false;
+    const start = Date.now();
+
+    console.log('=== RESPONSE STREAM ===');
+    try {
+        const stream = provider.chat(
+            [{ role: 'user', content: 'say hello in one word' }],
+            [],  // no tools — minimal call
+            {
+                maxTokens: 16,
+                temperature: 0,
+                signal: controller.signal,
+            },
+        );
+        for await (const event of stream as AsyncIterable<AIStreamEvent>) {
+            gotAnyEvent = true;
+            if (event.type === 'token') {
+                transcript.push(event.text);
+                process.stdout.write(event.text);
+            } else if (event.type === 'done') {
+                gotDone = true;
+                console.log('');
+                console.log('  [done] stopReason=' + event.stopReason);
+                break;
+            } else if (event.type === 'error') {
+                firstError = firstError ?? event.text;
+                console.log('');
+                console.log('  [error] ' + event.text);
+            } else {
+                console.log('  [' + event.type + ']');
+            }
+        }
+    } catch (err) {
+        const msg = err instanceof Error ? err.name + ': ' + err.message : String(err);
+        // AbortError is expected if we cancelled after getting enough response.
+        if (transcript.length > 0 && err instanceof Error && err.name === 'AbortError') {
+            // Treat as success — we got a response and cancelled.
+        } else {
+            console.log('');
+            console.log('  [thrown] ' + msg);
+            firstError = firstError ?? msg;
+        }
+    } finally {
+        clearTimeout(timeout);
+        try { provider.dispose(); } catch { /* ignore */ }
+    }
+
+    const durationMs = Date.now() - start;
+    console.log('');
+    console.log('=== VERIFICATION REPORT ===');
+    console.log('Duration:           ' + durationMs + 'ms');
+    console.log('Events received:    ' + (gotAnyEvent ? 'YES' : 'NO'));
+    console.log('Done event:         ' + (gotDone ? 'YES' : 'NO'));
+    console.log('Tokens received:    ' + transcript.length);
+    console.log('Response text:      ' + JSON.stringify(transcript.join('')));
+    console.log('Error:              ' + (firstError ?? 'none'));
+    console.log('');
+
+    if (firstError && transcript.length === 0) {
+        console.log('>>> VERIFICATION FAILED — provider returned an error <<<');
+        console.log('');
+        console.log('  The most common failure modes for NVIDIA NIM:');
+        console.log('    - 401 Unauthorized: API key is invalid or expired. Get a fresh one at https://build.nvidia.com.');
+        console.log('    - 404 Model not found: the model ID "' + modelId + '" is not available on your NIM plan.');
+        console.log('                     Browse https://build.nvidia.com/models for the current list.');
+        console.log('    - 429 Rate limited: free-tier NIM keys are heavily rate-limited. Wait and retry.');
+        console.log('    - Network unreachable: integrate.api.nvidia.com may be blocked on your network.');
+        console.log('');
+        process.exitCode = 3;
+        return;
+    }
+
+    if (!gotAnyEvent && transcript.length === 0) {
+        console.log('>>> VERIFICATION FAILED — no response received (empty stream) <<<');
+        process.exitCode = 3;
+        return;
+    }
+
+    console.log('>>> ALL CHECKS PASSED — NVIDIA NIM provider made a real API call <<<');
+    console.log('The provider class, the OpenAI-compat HTTP path, the SSE parser, and the');
+    console.log('auth header are all working. To mark NVIDIA as VERIFIED in the registry,');
+    console.log('flip verified:false → verified:true in src/agent/llm/providerFactory.ts');
+    console.log('and update the row in PROVIDERS.md.');
+    process.exitCode = 0;
 }
 
 app.on('window-all-closed', () => {
