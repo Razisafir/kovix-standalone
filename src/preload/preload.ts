@@ -107,12 +107,16 @@ contextBridge.exposeInMainWorld('kovixAPI', {
             ipcRenderer.invoke('kovix:spec:remove-item', payload),
         /** Approve the spec — locks it and advances to the Plan stage. */
         approve: () => ipcRenderer.invoke('kovix:spec:approve'),
+        /** Go back to the Refine (conversation) stage. Clears the generated spec, keeps the conversation. */
+        back: () => ipcRenderer.invoke('kovix:spec:back'),
     },
     plan: {
         /** Generate a milestone plan from the approved spec via the LLM. */
         generate: () => ipcRenderer.invoke('kovix:plan:generate'),
         /** Approve the plan — locks it and advances to the Pre-flight stage. */
         approve: () => ipcRenderer.invoke('kovix:plan:approve'),
+        /** Go back to the Spec stage. Un-approves the spec (makes it editable) and clears the plan. */
+        back: () => ipcRenderer.invoke('kovix:plan:back'),
     },
     preflight: {
         /** Save the pre-flight config. Validates inputs. */
