@@ -6,3 +6,11 @@ test-staging-workspace/
 .DS_Store
 .env
 .env.local
+
+# Provider settings — NEVER commit. The settings store writes to
+# app.getPath('userData') (outside the repo by default) but we add this
+# defensive entry in case anyone copies a settings file into the repo
+# for debugging or sync.
+kovix-settings*.json
+*.kovix-settings.json
+settings.local.json
