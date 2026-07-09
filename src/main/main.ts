@@ -2174,6 +2174,27 @@ const BUILD_MODE_HTML = `<!doctype html>
     cursor: not-allowed;
     opacity: 0.6;
   }
+  /* Loading state — adds a small spinner before the button text.
+     Toggled via the .btn-loading class. */
+  .btn-loading {
+    pointer-events: none;
+    position: relative;
+  }
+  .btn-loading::before {
+    content: '';
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: 7px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: btn-spin 0.6s linear infinite;
+    vertical-align: -2px;
+  }
+  @keyframes btn-spin {
+    to { transform: rotate(360deg); }
+  }
   .btn-secondary {
     background: var(--surface);
     color: var(--text);
@@ -3563,6 +3584,7 @@ const BUILD_MODE_HTML = `<!doctype html>
     const ideaText = els.ideaInput.value.trim();
     if (!ideaText) return;
     els.ideaStart.disabled = true;
+    els.ideaStart.classList.add('btn-loading');
     els.ideaStart.textContent = 'Starting…';
 
     // Reset conversation
@@ -3581,6 +3603,7 @@ const BUILD_MODE_HTML = `<!doctype html>
       removeLoadingTurn();
       showError(err.message || String(err));
       els.ideaStart.disabled = false;
+      els.ideaStart.classList.remove('btn-loading');
       els.ideaStart.textContent = 'Start refinement';
       showState('idea');
     }
@@ -3810,7 +3833,8 @@ const BUILD_MODE_HTML = `<!doctype html>
 
   els.specApprove.addEventListener('click', async () => {
     els.specApprove.disabled = true;
-    els.specApprove.textContent = 'Approving&hellip;';
+    els.specApprove.classList.add('btn-loading');
+    els.specApprove.textContent = 'Approving…';
     try {
       const result = await kovixAPI.spec.approve();
       if (result.ok && result.spec) {
@@ -3822,11 +3846,13 @@ const BUILD_MODE_HTML = `<!doctype html>
       } else {
         showError(result.error || 'Failed to approve spec.');
         els.specApprove.disabled = false;
+        els.specApprove.classList.remove('btn-loading');
         els.specApprove.textContent = 'Approve spec & generate plan';
       }
     } catch (err) {
       showError(err.message || String(err));
       els.specApprove.disabled = false;
+      els.specApprove.classList.remove('btn-loading');
       els.specApprove.textContent = 'Approve spec & generate plan';
     }
   });
@@ -3944,7 +3970,8 @@ const BUILD_MODE_HTML = `<!doctype html>
 
   els.planApprove.addEventListener('click', async () => {
     els.planApprove.disabled = true;
-    els.planApprove.textContent = 'Approving&hellip;';
+    els.planApprove.classList.add('btn-loading');
+    els.planApprove.textContent = 'Approving…';
     try {
       const result = await kovixAPI.plan.approve();
       if (result.ok) {
@@ -3959,6 +3986,7 @@ const BUILD_MODE_HTML = `<!doctype html>
       showError(err.message || String(err));
     } finally {
       els.planApprove.disabled = false;
+      els.planApprove.classList.remove('btn-loading');
       els.planApprove.textContent = 'Approve plan & continue';
     }
   });
@@ -4029,7 +4057,8 @@ const BUILD_MODE_HTML = `<!doctype html>
 
   els.preflightConfirm.addEventListener('click', async () => {
     els.preflightConfirm.disabled = true;
-    els.preflightConfirm.textContent = 'Starting&hellip;';
+    els.preflightConfirm.classList.add('btn-loading');
+    els.preflightConfirm.textContent = 'Starting…';
     try {
       const config = await gatherPreflightConfig();
       const saveResult = await kovixAPI.preflight.save(config);
@@ -4051,6 +4080,7 @@ const BUILD_MODE_HTML = `<!doctype html>
       showError(err.message || String(err));
     } finally {
       els.preflightConfirm.disabled = false;
+      els.preflightConfirm.classList.remove('btn-loading');
       els.preflightConfirm.textContent = 'Start execution';
     }
   });
@@ -4342,6 +4372,7 @@ const BUILD_MODE_HTML = `<!doctype html>
   els.setTest.addEventListener('click', async () => {
     hideTestResult();
     els.setTest.disabled = true;
+    els.setTest.classList.add('btn-loading');
     els.setTest.textContent = 'Testing…';
     showTestResult('pending', 'Making a minimal API call…', null);
     try {
@@ -4360,12 +4391,14 @@ const BUILD_MODE_HTML = `<!doctype html>
       showTestResult('fail', 'Test failed: ' + (err.message || String(err)), null);
     } finally {
       els.setTest.disabled = false;
+      els.setTest.classList.remove('btn-loading');
       els.setTest.textContent = 'Test connection';
     }
   });
 
   els.setSave.addEventListener('click', async () => {
     els.setSave.disabled = true;
+    els.setSave.classList.add('btn-loading');
     els.setSave.textContent = 'Saving…';
     try {
       const newPreview = await kovixAPI.settings.save({
@@ -4381,6 +4414,7 @@ const BUILD_MODE_HTML = `<!doctype html>
       showTestResult('fail', 'Save failed: ' + (err.message || String(err)), null);
     } finally {
       els.setSave.disabled = false;
+      els.setSave.classList.remove('btn-loading');
       els.setSave.textContent = 'Save';
     }
   });
