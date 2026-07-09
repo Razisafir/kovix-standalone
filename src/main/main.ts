@@ -2945,6 +2945,14 @@ const BUILD_MODE_HTML = `<!doctype html>
     padding: 12px 14px;
     font-size: 14px;
     margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .error-banner > div:first-child {
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
   }
   .loading-dots {
     display: inline-flex;
@@ -3314,6 +3322,10 @@ const BUILD_MODE_HTML = `<!doctype html>
           <h2>Executing build</h2>
           <p id="execute-status-text">The agent is working through your milestones.</p>
         </div>
+        <div id="execute-error-banner" class="error-banner hidden" role="alert">
+          <div id="execute-error-text"></div>
+          <button id="execute-error-dismiss" class="btn btn-ghost" type="button">Dismiss</button>
+        </div>
         <div class="execute-progress-bar">
           <div id="execute-progress-fill" class="execute-progress-fill"></div>
         </div>
@@ -3440,6 +3452,9 @@ const BUILD_MODE_HTML = `<!doctype html>
     preflightConfirm: document.getElementById('preflight-confirm'),
     // Execute
     executeStatusText: document.getElementById('execute-status-text'),
+    executeErrorBanner: document.getElementById('execute-error-banner'),
+    executeErrorText: document.getElementById('execute-error-text'),
+    executeErrorDismiss: document.getElementById('execute-error-dismiss'),
     executeProgressFill: document.getElementById('execute-progress-fill'),
     executeProgressText: document.getElementById('execute-progress-text'),
     executeCreditsText: document.getElementById('execute-credits-text'),
@@ -4092,6 +4107,20 @@ const BUILD_MODE_HTML = `<!doctype html>
   let execTotalCredits = 0;
 
   function renderExecuteScreen() {
+    // Show a loading state immediately — getState() is async and the
+    // milestone list would otherwise be a blank hole for a beat.
+    els.executeMilestones.innerHTML =
+      '<div class="loading-card">' +
+        '<div class="loading-dots"><span></span><span></span><span></span></div>' +
+        '<div>Preparing milestones&hellip;</div>' +
+      '</div>';
+    els.executeErrorBanner.classList.add('hidden');
+    els.executeStatusText.textContent = 'The agent is working through your milestones.';
+    els.executeStatusText.style.color = '';
+    els.executeProgressFill.style.width = '0%';
+    els.executeProgressText.textContent = '0 / 0 milestones';
+    els.executeCreditsText.textContent = '~0 credits used';
+
     // Get the current session to populate milestone states
     kovixAPI.session.getState().then(state => {
       execMilestones = state.milestones || [];
@@ -4106,11 +4135,24 @@ const BUILD_MODE_HTML = `<!doctype html>
       }
       rerenderExecuteMilestones();
       updateExecuteProgress();
+    }).catch(err => {
+      els.executeMilestones.innerHTML =
+        '<div class="loading-card" style="color:var(--danger)">' +
+          '<div>Failed to load milestones: ' + escapeHtml(err.message || String(err)) + '</div>' +
+        '</div>';
     });
   }
 
   function rerenderExecuteMilestones() {
     els.executeMilestones.innerHTML = '';
+    if (execMilestones.length === 0) {
+      els.executeMilestones.innerHTML =
+        '<div class="loading-card">' +
+          '<div>No milestones to execute. The plan may have been empty.</div>' +
+        '</div>';
+      updateExecuteProgress();
+      return;
+    }
     execMilestones.forEach((m, i) => {
       const st = execMilestoneStates[m.id] || { status: 'pending', events: [] };
       const card = renderMilestoneCard(m, i, {
@@ -4148,9 +4190,17 @@ const BUILD_MODE_HTML = `<!doctype html>
     } else if (event.type === 'milestone_resumed') {
       els.executePauseBanner.classList.add('hidden');
     } else if (event.type === 'error') {
-      els.executeStatusText.textContent = 'Error: ' + event.text;
+      els.executeStatusText.textContent = 'The agent reported an error.';
       els.executeStatusText.style.color = 'var(--danger)';
+      els.executeErrorText.textContent = event.text || 'Unknown execution error.';
+      els.executeErrorBanner.classList.remove('hidden');
     }
+  });
+
+  els.executeErrorDismiss.addEventListener('click', () => {
+    els.executeErrorBanner.classList.add('hidden');
+    els.executeStatusText.textContent = 'The agent is working through your milestones.';
+    els.executeStatusText.style.color = '';
   });
 
   kovixAPI.exec.onStateUpdate((update) => {
@@ -4199,7 +4249,7 @@ const BUILD_MODE_HTML = `<!doctype html>
   els.execAbort.addEventListener('click', async () => {
     if (!confirm('Abort execution? This will stop the agent at the next yield point.')) return;
     await kovixAPI.exec.abort();
-    els.executeStatusText.textContent = 'Aborting&hellip;';
+    els.executeStatusText.textContent = 'Aborting…';
   });
 
   // --- DONE state ---
@@ -4217,6 +4267,11 @@ const BUILD_MODE_HTML = `<!doctype html>
     execTotalCredits = 0;
     els.executeStatusText.textContent = 'The agent is working through your milestones.';
     els.executeStatusText.style.color = '';
+    els.executeErrorBanner.classList.add('hidden');
+    els.executePauseBanner.classList.add('hidden');
+    els.executeProgressFill.style.width = '0%';
+    els.executeProgressText.textContent = '0 / 0 milestones';
+    els.executeCreditsText.textContent = '~0 credits used';
     updateIdeaStartEnabled();
     els.ideaStart.textContent = 'Start refinement';
     showState('idea');
@@ -4225,11 +4280,13 @@ const BUILD_MODE_HTML = `<!doctype html>
 
   // --- Error banner ---
   function showError(msg) {
-    const existing = document.querySelector('.error-banner');
+    const existing = document.querySelector('main .container > .error-banner');
     if (existing) existing.remove();
     const div = document.createElement('div');
     div.className = 'error-banner';
-    div.textContent = 'Error: ' + msg;
+    const text = document.createElement('div');
+    text.textContent = 'Error: ' + msg;
+    div.appendChild(text);
     document.querySelector('main .container').prepend(div);
     setTimeout(() => div.remove(), 8000);
   }
