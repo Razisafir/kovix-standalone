@@ -1150,6 +1150,26 @@ app.whenReady().then(async () => {
         return;
     }
 
+    // KOVIX_CHECK_KEY=1: lightweight key-presence check. Calls the same
+    // resolveProviderConfig() the e2e verify script uses, prints structured
+    // CHECK_KEY:* lines to stdout, then quits. Used by
+    // scripts/check-stored-key.ts. Does NOT make any LLM calls. Does NOT
+    // print the full key (only a masked preview).
+    if (process.env.KOVIX_CHECK_KEY === '1') {
+        try {
+            await runCheckStoredKey();
+        } catch (err) {
+            console.error('[check-key] FATAL:', err instanceof Error ? err.stack ?? err.message : String(err));
+            process.exitCode = 1;
+        } finally {
+            // Use app.exit(code) — NOT app.quit() — so the exit code propagates
+            // to the parent process. app.quit() can exit 0 even when
+            // process.exitCode is set, which would falsely report success.
+            app.exit(Number(process.exitCode) || 0);
+        }
+        return;
+    }
+
     // KOVIX_E2E_VERIFY=1: Phase 2 full end-to-end verification. Drives the
     // entire Build mode flow with REAL LLM calls: Idea → Refinement → Spec
     // approval → Plan generation → Pre-flight config → Execute (real staged
@@ -1164,7 +1184,11 @@ app.whenReady().then(async () => {
             console.error('[e2e-verify] FATAL:', err instanceof Error ? err.stack ?? err.message : String(err));
             process.exitCode = 1;
         } finally {
-            app.quit();
+            // Use app.exit(code) — NOT app.quit() — so the exit code propagates
+            // to the parent process (test/verify-end-to-end.ts). app.quit()
+            // can exit 0 even when process.exitCode is set, which would cause
+            // a failed e2e run to be reported as a success — a serious CI bug.
+            app.exit(Number(process.exitCode) || 0);
         }
         return;
     }
@@ -1458,6 +1482,93 @@ async function runSettingsStoreTest(): Promise<void> {
 }
 
 /**
+ * Lightweight key-presence check. Calls the same resolveProviderConfig()
+ * the e2e verify script uses, prints structured CHECK_KEY:* lines to stdout
+ * (parseable by scripts/check-stored-key.ts), then quits.
+ *
+ * "Real key present" means: the resolved config is for a cloud provider that
+ * requires a key, AND that key is non-empty. Local providers (ollama, xenova,
+ * lmstudio, litellm) don't count — they don't prove the production path works.
+ *
+ * Does NOT make any LLM calls. Does NOT print the full key — only a masked
+ * preview (first 8 chars + "..." + last 4 chars).
+ */
+async function runCheckStoredKey(): Promise<void> {
+    const pathMod = await import('node:path');
+    const fs = await import('node:fs/promises');
+
+    console.log('=== Kovix — Stored Key Check ===');
+    console.log('');
+
+    // Print the settings file path so the user knows exactly where we looked.
+    const settingsPath = pathMod.join(app.getPath('userData'), 'kovix-settings.json');
+    console.log('CHECK_KEY:SETTINGS_PATH=' + settingsPath);
+    let fileExists = false;
+    try {
+        await fs.access(settingsPath);
+        fileExists = true;
+    } catch {
+        fileExists = false;
+    }
+    console.log('CHECK_KEY:SETTINGS_FILE_EXISTS=' + fileExists);
+
+    const cfg = await resolveProviderConfig();
+    if (!cfg) {
+        // resolveProviderConfig never actually returns null in practice
+        // (it falls back to ollama), but handle it defensively.
+        console.log('CHECK_KEY:KEY_PRESENT=NO');
+        console.log('CHECK_KEY:REASON=resolveProviderConfig returned null');
+        process.exitCode = 2;
+        return;
+    }
+
+    const localProviders: ProviderName[] = ['ollama', 'xenova', 'lmstudio', 'litellm'];
+    const isLocal = localProviders.includes(cfg.name);
+    const hasKey = !!cfg.apiKey && cfg.apiKey.length > 0;
+    // A "real" key for our purposes: cloud provider + non-empty key. We do
+    // NOT accept the local-provider fallback (ollama with no key) as evidence
+    // that the production path works.
+    const realKeyPresent = !isLocal && hasKey;
+
+    console.log('CHECK_KEY:PROVIDER=' + cfg.name);
+    console.log('CHECK_KEY:SOURCE=' + cfg.source);
+    console.log('CHECK_KEY:IS_LOCAL=' + isLocal);
+    console.log('CHECK_KEY:HAS_KEY=' + hasKey);
+    if (cfg.modelId) {
+        console.log('CHECK_KEY:MODEL=' + cfg.modelId);
+    }
+    if (cfg.baseUrl) {
+        console.log('CHECK_KEY:BASE_URL=' + cfg.baseUrl);
+    }
+    if (hasKey) {
+        const k = cfg.apiKey!;
+        // Masked preview: first 8 chars + "..." + last 4 chars. Never the
+        // full key. (For short keys we mask even more aggressively.)
+        const masked = k.length > 12
+            ? k.slice(0, 8) + '...' + k.slice(-4)
+            : '(short key, masked)';
+        console.log('CHECK_KEY:KEY_MASKED=' + masked);
+    }
+
+    if (realKeyPresent) {
+        console.log('CHECK_KEY:KEY_PRESENT=YES');
+        console.log('CHECK_KEY:REASON=cloud provider "' + cfg.name + '" with non-empty key from ' + cfg.source);
+    } else {
+        console.log('CHECK_KEY:KEY_PRESENT=NO');
+        if (isLocal) {
+            console.log('CHECK_KEY:REASON=resolved provider is local (' + cfg.name + ') — no API key needed, but production path not proven');
+        } else if (!hasKey) {
+            console.log('CHECK_KEY:REASON=cloud provider "' + cfg.name + '" resolved but no API key available');
+        } else {
+            console.log('CHECK_KEY:REASON=unexpected state');
+        }
+    }
+
+    console.log('');
+    console.log('Verdict: ' + (realKeyPresent ? 'REAL key present — e2e verify can proceed.' : 'NO real key — e2e verify will exit with code 2.'));
+}
+
+/**
  * Phase 2 end-to-end verification: drives the ENTIRE Build mode flow with
  * real LLM calls, real staged writes, real approval gates, and real disk
  * writes. Prints the full transcript to stdout.
@@ -1507,6 +1618,40 @@ async function runEndToEndVerification(): Promise<void> {
         console.log('API key:  (none — local provider)');
     }
     console.log('');
+
+    // If the resolved config is the DEFAULT local fallback (source=env,
+    // local provider, no key, no explicit OLLAMA_BASE_URL), treat it as
+    // "no provider config" and exit 2. This is what happens when the user
+    // hasn't configured anything yet — resolveProviderConfig() silently
+    // falls back to ollama, which then fails with a confusing "Ollama not
+    // reachable" error. We want a clean, honest "no config" message instead.
+    //
+    // Users who explicitly want to test against a local Ollama instance can
+    // set KOVIX_VERIFY_ALLOW_LOCAL=1 (and should also set OLLAMA_BASE_URL so
+    // we know it's intentional, not the default fallback).
+    const localProviders: ProviderName[] = ['ollama', 'xenova', 'lmstudio', 'litellm'];
+    const isDefaultLocalFallback =
+        cfg.source === 'env' &&
+        localProviders.includes(cfg.name) &&
+        !cfg.apiKey &&
+        !process.env.OLLAMA_BASE_URL &&
+        !process.env.KOVIX_VERIFY_ALLOW_LOCAL;
+    if (isDefaultLocalFallback) {
+        console.error('FAIL: No real provider config available — resolveProviderConfig() fell back to local ' + cfg.name + '.');
+        console.error('      This means no provider is configured in the settings store AND no');
+        console.error('      ANTHROPIC_API_KEY / OPENROUTER_API_KEY / NVIDIA_API_KEY env var is set.');
+        console.error('');
+        console.error('      To fix: open the UI (npm start), click the gear icon, configure a');
+        console.error('      cloud provider (e.g. Anthropic + claude-sonnet-5 + your API key),');
+        console.error('      Test connection, Save, close the window. Then re-run this script.');
+        console.error('');
+        console.error('      (To test against a local Ollama instance instead, set OLLAMA_BASE_URL');
+        console.error('      AND KOVIX_VERIFY_ALLOW_LOCAL=1 to explicitly opt in.)');
+        console.error('');
+        console.error('      (Per project rules: this script NEVER hardcodes or asks for a key.)');
+        process.exitCode = 2;
+        return;
+    }
 
     // If the provider requires a key but none is available, we can't proceed.
     const requiresKey = cfg.name !== 'ollama' && cfg.name !== 'xenova' && cfg.name !== 'lmstudio' && cfg.name !== 'litellm';

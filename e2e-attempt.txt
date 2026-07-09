@@ -1,0 +1,51 @@
+
+> kovix-standalone@0.1.0 verify:e2e
+> tsx test/verify-end-to-end.ts
+
+[verify-e2e] building bundle...
+
+> kovix-standalone@0.1.0 build:bundle
+> esbuild src/main/main.ts --bundle --platform=node --format=cjs --outfile=dist/main/main.cjs --external:electron && esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --outfile=dist/preload/preload.cjs --external:electron
+
+
+  dist/main/main.cjs  269.9kb
+
+⚡ Done in 16ms
+
+  dist/preload/preload.cjs  6.8kb
+
+⚡ Done in 3ms
+[verify-e2e] launching electron in headless e2e verify mode...
+[verify-e2e] (provider config is read from the settings store)
+
+[11698:0709/103804.875306:ERROR:bus.cc(407)] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory
+[11698:0709/103805.044724:ERROR:bus.cc(407)] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory
+[11698:0709/103805.044795:ERROR:bus.cc(407)] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory
+[11698:0709/103805.047753:ERROR:bus.cc(407)] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")
+[11698:0709/103805.047804:ERROR:bus.cc(407)] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")
+[11698:0709/103805.047812:ERROR:bus.cc(407)] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")
+[11698:0709/103805.047819:ERROR:bus.cc(407)] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")
+[11698:0709/103805.047823:ERROR:bus.cc(407)] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")
+=== Kovix Phase 2 — End-to-End Verification ===
+
+Idea: a tiny CLI tool that watches a folder and prints the names of files that change
+Pause mode: auto
+
+=== PROVIDER CONFIG ===
+Provider: ollama (source: env)
+API key:  (none — local provider)
+
+FAIL: No real provider config available — resolveProviderConfig() fell back to local ollama.
+      This means no provider is configured in the settings store AND no
+      ANTHROPIC_API_KEY / OPENROUTER_API_KEY / NVIDIA_API_KEY env var is set.
+
+      To fix: open the UI (npm start), click the gear icon, configure a
+      cloud provider (e.g. Anthropic + claude-sonnet-5 + your API key),
+      Test connection, Save, close the window. Then re-run this script.
+
+      (To test against a local Ollama instance instead, set OLLAMA_BASE_URL
+      AND KOVIX_VERIFY_ALLOW_LOCAL=1 to explicitly opt in.)
+
+      (Per project rules: this script NEVER hardcodes or asks for a key.)
+
+[verify-e2e] ❌ end-to-end verification exited with code 2
