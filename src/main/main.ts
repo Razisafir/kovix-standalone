@@ -3200,6 +3200,7 @@ const BUILD_MODE_HTML = `<!doctype html>
           <label for="idea-input">Your idea</label>
           <textarea id="idea-input" placeholder="e.g. a tiny CLI tool that watches a folder and prints the names of files that change"></textarea>
           <div class="idea-card-actions">
+            <span class="answer-hint">Press <kbd>&#8984;</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> to start</span>
             <button id="idea-start" class="btn btn-primary" disabled>Start refinement</button>
           </div>
         </div>
@@ -3798,7 +3799,7 @@ const BUILD_MODE_HTML = `<!doctype html>
       if (items.length === 0) {
         const li = document.createElement('li');
         li.className = 'spec-empty';
-        li.textContent = '(no items — add one below)';
+        li.textContent = locked ? '(no items)' : '(no items — add one below)';
         ul.appendChild(li);
       }
 
@@ -3912,6 +3913,13 @@ const BUILD_MODE_HTML = `<!doctype html>
     currentMilestones = plan.milestones || [];
     els.planSummary.textContent = plan.summary || '';
     els.planMilestones.innerHTML = '';
+    if (currentMilestones.length === 0) {
+      els.planMilestones.innerHTML =
+        '<div class="loading-card">' +
+          '<div>The plan returned no milestones. You can go back and re-approve the spec, or retry plan generation.</div>' +
+        '</div>';
+      return;
+    }
     currentMilestones.forEach((m, i) => {
       els.planMilestones.appendChild(renderMilestoneCard(m, i, { stage: 'plan' }));
     });
@@ -4338,11 +4346,23 @@ const BUILD_MODE_HTML = `<!doctype html>
     // Force reflow then add .open for the transition
     void els.settingsOverlay.offsetWidth;
     els.settingsOverlay.classList.add('open');
+    // Move focus into the modal so keyboard users don't have to Tab from
+    // the top of the page. Focus the provider select (or the first focusable
+    // field if the select is hidden for some reason).
+    setTimeout(() => {
+      if (els.setProvider.offsetParent !== null) {
+        els.setProvider.focus();
+      } else {
+        els.setCancel.focus();
+      }
+    }, 50);
   }
 
   function closeSettings() {
     els.settingsOverlay.classList.remove('open');
     setTimeout(() => els.settingsOverlay.classList.add('hidden'), 150);
+    // Return focus to the gear button so keyboard users keep their place.
+    els.gearBtn.focus();
   }
 
   async function updateProviderSpecificUI() {
