@@ -15,6 +15,7 @@
     "verify": "tsx test/verify.ts",
     "verify:refine": "tsx test/verify-refine.ts",
     "verify:settings": "tsx test/verify-settings.ts",
+    "verify:e2e": "tsx test/verify-end-to-end.ts",
     "verify:hello": "tsx test/verify.ts --task \"create a file called hello.txt with the text 'test' in it\"",
     "start": "npm run build:bundle && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit"

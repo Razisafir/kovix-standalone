@@ -1150,6 +1150,25 @@ app.whenReady().then(async () => {
         return;
     }
 
+    // KOVIX_E2E_VERIFY=1: Phase 2 full end-to-end verification. Drives the
+    // entire Build mode flow with REAL LLM calls: Idea → Refinement → Spec
+    // approval → Plan generation → Pre-flight config → Execute (real staged
+    // writes, real approval gate, real disk writes, real verification) → Done.
+    // Prints the full transcript to stdout. Used by test/verify-end-to-end.ts.
+    //
+    // Requires a real provider config in the settings store (no hardcoded keys).
+    if (process.env.KOVIX_E2E_VERIFY === '1') {
+        try {
+            await runEndToEndVerification();
+        } catch (err) {
+            console.error('[e2e-verify] FATAL:', err instanceof Error ? err.stack ?? err.message : String(err));
+            process.exitCode = 1;
+        } finally {
+            app.quit();
+        }
+        return;
+    }
+
     createWindow();
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
@@ -1435,6 +1454,476 @@ async function runSettingsStoreTest(): Promise<void> {
     } else {
         console.log('>>> SETTINGS STORE HAS ISSUES — see above <<<');
         process.exitCode = 1;
+    }
+}
+
+/**
+ * Phase 2 end-to-end verification: drives the ENTIRE Build mode flow with
+ * real LLM calls, real staged writes, real approval gates, and real disk
+ * writes. Prints the full transcript to stdout.
+ *
+ * Flow:
+ *   1. Resolve provider config from settings store (no hardcoded keys)
+ *   2. Refinement loop (real LLM) → produce spec
+ *   3. Approve spec (lock it)
+ *   4. Plan generation (real LLM) → produce milestones
+ *   5. Approve plan
+ *   6. Configure preflight (pause mode from env, default 'auto')
+ *   7. Execute: run agent loop over milestones with real staging + approval
+ *   8. Verify: confirm files appeared on disk, staging blocked writes
+ *      before approval, verification ran
+ *
+ * The transcript is printed verbatim — not summarized, not assumed.
+ */
+async function runEndToEndVerification(): Promise<void> {
+    const ideaText = process.env.KOVIX_VERIFY_IDEA
+        ?? 'a tiny CLI tool that watches a folder and prints the names of files that change';
+    const pauseMode = (process.env.KOVIX_VERIFY_PAUSE as 'every' | 'major' | 'auto' | 'custom') ?? 'auto';
+
+    console.log('=== Kovix Phase 2 — End-to-End Verification ===');
+    console.log('');
+    console.log('Idea: ' + ideaText);
+    console.log('Pause mode: ' + pauseMode);
+    console.log('');
+
+    // ---- 1. Resolve provider config ----
+    const cfg = await resolveProviderConfig();
+    if (!cfg) {
+        console.error('FAIL: No provider config available.');
+        console.error('      Open the UI (npm start), click the gear icon, configure a provider,');
+        console.error('      Test connection, Save, close the window. Then re-run this script.');
+        process.exitCode = 2;
+        return;
+    }
+    console.log('=== PROVIDER CONFIG ===');
+    console.log('Provider: ' + cfg.name + ' (source: ' + cfg.source + ')');
+    if (cfg.modelId) { console.log('Model:    ' + cfg.modelId); }
+    if (cfg.apiKey) {
+        const masked = cfg.apiKey.length > 8
+            ? cfg.apiKey.slice(0, 4) + '...' + cfg.apiKey.slice(-4)
+            : '(short key)';
+        console.log('API key:  ' + masked);
+    } else {
+        console.log('API key:  (none — local provider)');
+    }
+    console.log('');
+
+    // If the provider requires a key but none is available, we can't proceed.
+    const requiresKey = cfg.name !== 'ollama' && cfg.name !== 'xenova' && cfg.name !== 'lmstudio' && cfg.name !== 'litellm';
+    if (requiresKey && !cfg.apiKey) {
+        console.error('FAIL: Provider "' + cfg.name + '" requires an API key but none is stored.');
+        console.error('      Open the UI (npm start), click the gear icon, paste your API key,');
+        console.error('      Test connection, Save, close the window. Then re-run this script.');
+        console.error('');
+        console.error('      (Per project rules: this script NEVER hardcodes or asks for a key.)');
+        process.exitCode = 2;
+        return;
+    }
+
+    // Build provider + services
+    let provider;
+    try {
+        provider = createProvider({
+            name: cfg.name,
+            apiKey: cfg.apiKey,
+            modelId: cfg.modelId,
+            baseUrl: cfg.baseUrl,
+        });
+    } catch (err) {
+        console.error('FAIL: Could not create provider: ' + (err instanceof Error ? err.message : String(err)));
+        process.exitCode = 1;
+        return;
+    }
+
+    // ---- 2. Refinement loop (real LLM) ----
+    console.log('=== STAGE 1: REFINEMENT (real LLM) ===');
+    console.log('');
+    const refinementService = new RefinementService({
+        aiProvider: provider,
+        maxTurns: 5,
+        minTurns: 3,
+        log: (msg) => console.log('  ' + msg),
+    });
+
+    const SCRIPTED_ANSWERS = [
+        'It should watch the current directory recursively and print to stdout, one file per line.',
+        'Target is developers on macOS and Linux. They run it from the terminal.',
+        'Yes, ignore .git and node_modules by default. No config file needed for v1.',
+        'Done means: I can run `kovix-watch .` and see a line printed within 1 second of saving any file.',
+        'No remote sync, no GUI, no logging to file. Just stdout.',
+    ];
+    function getAnswerForRound(round: number): string {
+        return SCRIPTED_ANSWERS[round] ?? "Make a sensible default for that.";
+    }
+
+    const priorTurns: RefinementTurn[] = [];
+    let finalSpec: import('../agent/index.js').RefinementSpec | null = null;
+    let refineRounds = 0;
+    let refineHardCap = 8;
+
+    while (refineHardCap-- > 0) {
+        const round = refineRounds + 1;
+        console.log('--- Refine Round ' + round + ' ---');
+        const result = await refinementService.refine({ ideaText, priorTurns });
+        if (result.kind === 'spec') {
+            console.log('');
+            console.log('>>> emit_spec received — refinement complete <<<');
+            finalSpec = result.spec;
+            break;
+        }
+        console.log('  QUESTION: ' + result.text);
+        priorTurns.push({ role: 'assistant', content: result.text });
+        const answer = getAnswerForRound(refineRounds);
+        console.log('  ANSWER (simulated): ' + answer);
+        priorTurns.push({ role: 'user', content: answer });
+        refineRounds++;
+        console.log('');
+    }
+
+    if (!finalSpec) {
+        console.error('FAIL: refinement loop exhausted hard cap without emitting spec.');
+        process.exitCode = 3;
+        return;
+    }
+
+    console.log('');
+    console.log('=== FINAL SPEC ===');
+    console.log('  must:');
+    for (const item of finalSpec.must) { console.log('    - ' + item); }
+    console.log('  should:');
+    for (const item of finalSpec.should) { console.log('    - ' + item); }
+    console.log('  wont:');
+    for (const item of finalSpec.wont) { console.log('    - ' + item); }
+    console.log('  doneCriteria:');
+    for (const item of finalSpec.doneCriteria) { console.log('    - ' + item); }
+    console.log('');
+
+    // Store spec in session (simulating what the UI does)
+    session = createEmptySession();
+    session.ideaText = ideaText;
+    session.priorTurns = priorTurns;
+    session.spec = finalSpec;
+    session.stage = 'spec';
+
+    // ---- 3. Approve spec ----
+    console.log('=== STAGE 2: SPEC APPROVAL ===');
+    console.log('');
+    session.specApprovedAt = Date.now();
+    session.stage = 'plan';
+    console.log('Spec approved at: ' + new Date(session.specApprovedAt).toISOString());
+    console.log('Spec is now locked. Advancing to plan stage.');
+    console.log('');
+
+    // ---- 4. Plan generation (real LLM) ----
+    console.log('=== STAGE 3: PLAN GENERATION (real LLM) ===');
+    console.log('');
+    const planningService = new PlanningService({
+        aiProvider: provider,
+        log: (msg) => console.log('  ' + msg),
+    });
+
+    let planResult: PlanResult;
+    try {
+        planResult = await planningService.plan({ spec: finalSpec, ideaText: ideaText });
+    } catch (err) {
+        console.error('FAIL: planning threw: ' + (err instanceof Error ? err.message : String(err)));
+        process.exitCode = 4;
+        return;
+    }
+
+    console.log('');
+    console.log('=== PLAN RESULT ===');
+    console.log('Summary: ' + planResult.summary);
+    console.log('Milestones: ' + planResult.milestones.length);
+    planResult.milestones.forEach((m, i) => {
+        console.log('  ' + (i + 1) + '. [' + m.type + (m.isMajor ? '/major' : '') + '] ' + m.name);
+        console.log('     desc: ' + m.description);
+        console.log('     satisfies: ' + (m.satisfies.length > 0 ? m.satisfies.join('; ') : '(none)'));
+        console.log('     est credits: ~' + m.estimatedCredits);
+    });
+    console.log('');
+
+    if (planResult.milestones.length === 0) {
+        console.error('FAIL: plan has no milestones.');
+        process.exitCode = 4;
+        return;
+    }
+
+    // Store plan in session
+    session.planSummary = planResult.summary;
+    session.milestones = planResult.milestones;
+
+    // ---- 5. Approve plan ----
+    console.log('=== STAGE 4: PLAN APPROVAL ===');
+    console.log('');
+    session.planApprovedAt = Date.now();
+    session.stage = 'preflight';
+    console.log('Plan approved at: ' + new Date(session.planApprovedAt).toISOString());
+    console.log('');
+
+    // ---- 6. Configure preflight ----
+    console.log('=== STAGE 5: PRE-FLIGHT CONFIG ===');
+    console.log('');
+    session.preflight = defaultPreflightConfig(session.milestones);
+    session.preflight.pauseMode = pauseMode;
+    // For 'auto' mode, no custom picks needed. For 'custom', default to major milestones.
+    if (pauseMode === 'custom') {
+        session.preflight.customPauseIds = session.milestones.filter(m => m.isMajor).map(m => m.id);
+    }
+    console.log('Pause mode: ' + session.preflight.pauseMode);
+    console.log('Custom pause IDs: ' + JSON.stringify(session.preflight.customPauseIds));
+    console.log('Credit limit: ' + session.preflight.creditLimit + ' (0 = no cap)');
+    console.log('Verify after each: ' + session.preflight.verifyAfterEach);
+    console.log('');
+
+    // ---- 7. Execute ----
+    console.log('=== STAGE 6: EXECUTION (real agent loop + staging + approval) ===');
+    console.log('');
+    session.stage = 'executing';
+    session.execution.milestoneStates = session.milestones.map(m => ({
+        milestoneId: m.id,
+        status: 'pending' as const,
+        events: [],
+    }));
+
+    // Build the agent loop with a per-build workspace
+    const os = await import('node:os');
+    const fs = await import('node:fs/promises');
+    const pathMod = await import('node:path');
+    const buildDir = pathMod.join(os.tmpdir(), 'kovix-builds', 'e2e-' + Date.now());
+    await fs.mkdir(buildDir, { recursive: true });
+    console.log('Build workspace: ' + buildDir);
+    console.log('');
+
+    let approvalFired = false;
+    let fileWrittenBeforeApproval = false;
+    let filesWritten: string[] = [];
+
+    const execAgent = new AgentLoop({
+        aiProvider: provider,
+        workspaceRoot: buildDir,
+        log: (msg: string) => console.log('  [agent] ' + msg),
+        approveWrite: async (filePath: string, proposedContent: string, _existing: string | null) => {
+            approvalFired = true;
+            console.log('  [APPROVAL CALLBACK] ' + filePath + ' (' + proposedContent.length + ' chars)');
+            // Verify staging: file should NOT exist on disk yet.
+            try {
+                await fs.readFile(pathMod.join(buildDir, filePath), 'utf8');
+                fileWrittenBeforeApproval = true;
+                console.error('  [VIOLATION] file exists on disk BEFORE approval!');
+            } catch (err: unknown) {
+                if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+                    console.log('  [STAGING OK] file NOT on disk before approval');
+                }
+            }
+            return true;
+        },
+        approveInterpreterCommand: async (cmd: string) => {
+            console.log('  [interpreter approval] ' + cmd);
+            return true;
+        },
+        onlineMode: false,
+    });
+
+    // Build the approved plan from session state
+    const approvedPlan = buildApprovedPlan();
+    console.log('Approved plan: ' + approvedPlan.milestones.length + ' milestones, mode=' + approvedPlan.executionMode);
+    console.log('');
+
+    // Run with auto-resume for pauses (since this is headless, we auto-resume)
+    let execAborted = false;
+    const execController = new AbortController();
+    const TIMEOUT_MS = 10 * 60 * 1000; // 10 minute hard cap
+    const timeoutId = setTimeout(() => {
+        console.error('  [TIMEOUT] execution exceeded ' + TIMEOUT_MS + 'ms, aborting');
+        execAborted = true;
+        execController.abort();
+    }, TIMEOUT_MS);
+
+    // Wire auto-resume: when the agent pauses at a milestone, auto-resume
+    // after 1 second (so the transcript shows the pause happened).
+    const autoResume = (milestone: IMilestone): Promise<'resume' | 'skip'> => {
+        console.log('  [PAUSED] at milestone: ' + milestone.name + ' — auto-resuming in 1s');
+        return new Promise<'resume'>((resolve) => {
+            setTimeout(() => resolve('resume'), 1000);
+        });
+    };
+
+    let completeReceived = false;
+    let completeSummary = '';
+    let execError: string | null = null;
+    let eventCount = 0;
+
+    try {
+        // We need to use the agent loop's runWithApprovedPlan, but it uses an
+        // internal awaitResume that we can't inject. So we replicate the
+        // milestone executor flow here with our own autoResume.
+        const { executeMilestonesWithPauses } = await import('../agent/milestoneExecutor.js');
+
+        const executeSubTask = async function* (subTask: string, signal?: AbortSignal): AsyncGenerator<AgentLoopEvent> {
+            // This is the same logic as AgentLoop.runWithApprovedPlan's inner
+            // executeSubTask, but we can't call that private method. Instead,
+            // we call agent.run() with the subtask — which runs the full agent
+            // loop for that subtask. This is a simplification but works for
+            // verification: each milestone becomes one agent.run() call.
+            const stream = execAgent.run(subTask, signal);
+            for await (const event of stream as AsyncIterable<AgentLoopEvent>) {
+                yield event;
+                if (event.type === 'complete') { return; }
+                if (event.type === 'error' && !event.recoverable) { return; }
+            }
+        };
+
+        const runVerification = async function* (_signal?: AbortSignal): AsyncGenerator<AgentLoopEvent> {
+            // The agent loop's runVerification is private; we replicate the
+            // logic here: check for package.json with test/build/typecheck.
+            const pkgPath = pathMod.resolve(buildDir, 'package.json');
+            let pkg: { scripts?: Record<string, string> } | null = null;
+            try {
+                pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
+            } catch {
+                pkg = null;
+            }
+            let command = '';
+            if (pkg?.scripts?.test && pkg.scripts.test !== 'echo "Error: no test specified" && exit 1') {
+                command = 'npm test';
+            } else if (pkg?.scripts?.build) {
+                command = 'npm run build';
+            } else if (pkg?.scripts?.typecheck) {
+                command = 'npm run typecheck';
+            } else {
+                yield { type: 'verification_result', passed: true, output: 'unverified:no-command', unverified: true };
+                return;
+            }
+            yield { type: 'verification_start', command };
+            try {
+                const { execFile } = await import('node:child_process');
+                const { promisify } = await import('node:util');
+                const execFileAsync = promisify(execFile);
+                const { stdout, stderr } = await execFileAsync(
+                    process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
+                    process.platform === 'win32' ? ['/c', command] : ['-c', command],
+                    { cwd: buildDir, timeout: 60_000, maxBuffer: 10 * 1024 * 1024 },
+                );
+                const output = (stdout + (stderr ? '\n' + stderr : '')).substring(0, 2000);
+                yield { type: 'verification_result', passed: true, output };
+            } catch (err: unknown) {
+                const e = err as { stdout?: string; stderr?: string };
+                const output = ((e.stdout ?? '') + (e.stderr ? '\n' + e.stderr : '')).substring(0, 2000);
+                yield { type: 'verification_result', passed: false, output };
+            }
+        };
+
+        for await (const event of executeMilestonesWithPauses({
+            approvedPlan,
+            executeSubTask,
+            runVerification,
+            awaitResume: autoResume,
+            signal: execController.signal,
+            log: (msg: string) => console.log('  [milestone-exec] ' + msg),
+        })) {
+            eventCount++;
+            if (event.type === 'milestone_reached') {
+                console.log('  [milestone_reached] ' + event.milestone.name);
+            } else if (event.type === 'milestone_completed') {
+                console.log('  [milestone_completed] ' + event.milestone.name);
+            } else if (event.type === 'milestone_paused') {
+                console.log('  [milestone_paused] ' + event.milestone.name);
+            } else if (event.type === 'milestone_resumed') {
+                console.log('  [milestone_resumed] ' + event.milestone.name);
+            } else if (event.type === 'tool_start') {
+                console.log('  [tool_start] ' + event.toolName);
+            } else if (event.type === 'tool_result') {
+                console.log('  [tool_result] ' + event.toolName + ' ' + (event.success ? 'OK' : 'FAIL'));
+                const snippet = event.result.substring(0, 150).replace(/\n/g, '\n    ');
+                console.log('    ' + snippet);
+            } else if (event.type === 'file_written') {
+                filesWritten.push(event.filePath);
+                console.log('  [file_written] ' + event.filePath);
+            } else if (event.type === 'verification_start') {
+                console.log('  [verification_start] ' + event.command);
+            } else if (event.type === 'verification_result') {
+                const mark = event.passed ? 'PASS' : 'FAIL';
+                const unverified = event.unverified ? ' (unverified)' : '';
+                console.log('  [verification_result] ' + mark + unverified);
+            } else if (event.type === 'error') {
+                console.log('  [error ' + (event.recoverable ? 'recoverable' : 'FATAL') + '] ' + event.text);
+                if (!event.recoverable) { execError = event.text; }
+            } else if (event.type === 'complete') {
+                completeReceived = true;
+                completeSummary = event.summary;
+                console.log('  [complete] ' + event.summary.substring(0, 300));
+            } else if (event.type === 'token') {
+                // Stream tokens to stdout for the transcript
+                process.stdout.write(event.text);
+            }
+        }
+    } catch (err) {
+        execError = err instanceof Error ? err.message : String(err);
+        console.error('  [exec threw] ' + execError);
+    } finally {
+        clearTimeout(timeoutId);
+    }
+
+    console.log('');
+    console.log('=== EXECUTION SUMMARY ===');
+    console.log('Events emitted: ' + eventCount);
+    console.log('complete event received: ' + completeReceived);
+    console.log('Approval callback fired: ' + approvalFired);
+    console.log('File written before approval (VIOLATION): ' + fileWrittenBeforeApproval);
+    console.log('Files written to disk: ' + filesWritten.length);
+    for (const f of filesWritten) { console.log('  - ' + f); }
+    console.log('Fatal error: ' + (execError ?? 'none'));
+    console.log('Aborted: ' + execAborted);
+    console.log('');
+
+    // ---- 8. Disk verification ----
+    console.log('=== STAGE 7: DISK VERIFICATION ===');
+    console.log('');
+    console.log('Build dir: ' + buildDir);
+    let dirContents: string[] = [];
+    try {
+        const entries = await fs.readdir(buildDir, { withFileTypes: true, recursive: true });
+        dirContents = entries
+            .filter(e => e.isFile())
+            .map(e => pathMod.relative(buildDir, pathMod.join(e.parentPath, e.name)));
+        console.log('Files on disk (' + dirContents.length + '):');
+        for (const f of dirContents) { console.log('  - ' + f); }
+    } catch (err) {
+        console.error('Could not read build dir: ' + (err instanceof Error ? err.message : String(err)));
+    }
+    console.log('');
+
+    // ---- Final verdict ----
+    console.log('=== FINAL VERDICT ===');
+    console.log('');
+    const checks: Array<{ name: string; pass: boolean; detail?: string }> = [
+        { name: 'Refinement produced a spec (real LLM)', pass: !!finalSpec, detail: finalSpec ? 'must=' + finalSpec.must.length + ', doneCriteria=' + finalSpec.doneCriteria.length : 'no spec' },
+        { name: 'Refinement ran 3-5 rounds', pass: refineRounds >= 3 && refineRounds <= 5, detail: 'got ' + refineRounds },
+        { name: 'Plan produced milestones (real LLM)', pass: planResult.milestones.length > 0, detail: planResult.milestones.length + ' milestones' },
+        { name: 'Plan has ≥ 2 milestones', pass: planResult.milestones.length >= 2, detail: planResult.milestones.length + ' milestones' },
+        { name: 'Execution emitted events', pass: eventCount > 0, detail: eventCount + ' events' },
+        { name: 'Approval callback fired (staging layer works)', pass: approvalFired, detail: approvalFired ? 'staging blocked writes' : 'no write approvals (agent may not have written files)' },
+        { name: 'File NOT written before approval', pass: !fileWrittenBeforeApproval, detail: fileWrittenBeforeApproval ? 'VIOLATION' : 'staging works' },
+        { name: 'Files appeared on disk after execution', pass: filesWritten.length > 0 || dirContents.length > 0, detail: filesWritten.length + ' writes, ' + dirContents.length + ' files on disk' },
+        { name: 'complete event received', pass: completeReceived, detail: completeReceived ? 'summary: ' + completeSummary.substring(0, 100) : 'no complete event' },
+        { name: 'No fatal error', pass: !execError, detail: execError ?? 'clean' },
+    ];
+
+    let allPass = true;
+    for (const c of checks) {
+        const status = c.pass ? 'PASS' : 'FAIL';
+        if (!c.pass) { allPass = false; }
+        const detail = c.detail ? ' — ' + c.detail : '';
+        console.log('  [' + status + '] ' + c.name + detail);
+    }
+
+    console.log('');
+    if (allPass) {
+        console.log('>>> ALL CHECKS PASSED — Phase 2 end-to-end flow works <<<');
+    } else {
+        console.log('>>> SOME CHECKS FAILED — see above <<<');
+        process.exitCode = 5;
     }
 }
 
