@@ -1150,6 +1150,23 @@ app.whenReady().then(async () => {
         return;
     }
 
+    // KOVIX_CHECK_KEY=1: lightweight key-presence check. Calls the same
+    // resolveProviderConfig() the e2e verify script uses, prints structured
+    // CHECK_KEY:* lines to stdout, then quits. Used by
+    // scripts/check-stored-key.ts. Does NOT make any LLM calls. Does NOT
+    // print the full key (only a masked preview).
+    if (process.env.KOVIX_CHECK_KEY === '1') {
+        try {
+            await runCheckStoredKey();
+        } catch (err) {
+            console.error('[check-key] FATAL:', err instanceof Error ? err.stack ?? err.message : String(err));
+            process.exitCode = 1;
+        } finally {
+            app.quit();
+        }
+        return;
+    }
+
     // KOVIX_E2E_VERIFY=1: Phase 2 full end-to-end verification. Drives the
     // entire Build mode flow with REAL LLM calls: Idea → Refinement → Spec
     // approval → Plan generation → Pre-flight config → Execute (real staged
@@ -1455,6 +1472,93 @@ async function runSettingsStoreTest(): Promise<void> {
         console.log('>>> SETTINGS STORE HAS ISSUES — see above <<<');
         process.exitCode = 1;
     }
+}
+
+/**
+ * Lightweight key-presence check. Calls the same resolveProviderConfig()
+ * the e2e verify script uses, prints structured CHECK_KEY:* lines to stdout
+ * (parseable by scripts/check-stored-key.ts), then quits.
+ *
+ * "Real key present" means: the resolved config is for a cloud provider that
+ * requires a key, AND that key is non-empty. Local providers (ollama, xenova,
+ * lmstudio, litellm) don't count — they don't prove the production path works.
+ *
+ * Does NOT make any LLM calls. Does NOT print the full key — only a masked
+ * preview (first 8 chars + "..." + last 4 chars).
+ */
+async function runCheckStoredKey(): Promise<void> {
+    const pathMod = await import('node:path');
+    const fs = await import('node:fs/promises');
+
+    console.log('=== Kovix — Stored Key Check ===');
+    console.log('');
+
+    // Print the settings file path so the user knows exactly where we looked.
+    const settingsPath = pathMod.join(app.getPath('userData'), 'kovix-settings.json');
+    console.log('CHECK_KEY:SETTINGS_PATH=' + settingsPath);
+    let fileExists = false;
+    try {
+        await fs.access(settingsPath);
+        fileExists = true;
+    } catch {
+        fileExists = false;
+    }
+    console.log('CHECK_KEY:SETTINGS_FILE_EXISTS=' + fileExists);
+
+    const cfg = await resolveProviderConfig();
+    if (!cfg) {
+        // resolveProviderConfig never actually returns null in practice
+        // (it falls back to ollama), but handle it defensively.
+        console.log('CHECK_KEY:KEY_PRESENT=NO');
+        console.log('CHECK_KEY:REASON=resolveProviderConfig returned null');
+        process.exitCode = 2;
+        return;
+    }
+
+    const localProviders: ProviderName[] = ['ollama', 'xenova', 'lmstudio', 'litellm'];
+    const isLocal = localProviders.includes(cfg.name);
+    const hasKey = !!cfg.apiKey && cfg.apiKey.length > 0;
+    // A "real" key for our purposes: cloud provider + non-empty key. We do
+    // NOT accept the local-provider fallback (ollama with no key) as evidence
+    // that the production path works.
+    const realKeyPresent = !isLocal && hasKey;
+
+    console.log('CHECK_KEY:PROVIDER=' + cfg.name);
+    console.log('CHECK_KEY:SOURCE=' + cfg.source);
+    console.log('CHECK_KEY:IS_LOCAL=' + isLocal);
+    console.log('CHECK_KEY:HAS_KEY=' + hasKey);
+    if (cfg.modelId) {
+        console.log('CHECK_KEY:MODEL=' + cfg.modelId);
+    }
+    if (cfg.baseUrl) {
+        console.log('CHECK_KEY:BASE_URL=' + cfg.baseUrl);
+    }
+    if (hasKey) {
+        const k = cfg.apiKey!;
+        // Masked preview: first 8 chars + "..." + last 4 chars. Never the
+        // full key. (For short keys we mask even more aggressively.)
+        const masked = k.length > 12
+            ? k.slice(0, 8) + '...' + k.slice(-4)
+            : '(short key, masked)';
+        console.log('CHECK_KEY:KEY_MASKED=' + masked);
+    }
+
+    if (realKeyPresent) {
+        console.log('CHECK_KEY:KEY_PRESENT=YES');
+        console.log('CHECK_KEY:REASON=cloud provider "' + cfg.name + '" with non-empty key from ' + cfg.source);
+    } else {
+        console.log('CHECK_KEY:KEY_PRESENT=NO');
+        if (isLocal) {
+            console.log('CHECK_KEY:REASON=resolved provider is local (' + cfg.name + ') — no API key needed, but production path not proven');
+        } else if (!hasKey) {
+            console.log('CHECK_KEY:REASON=cloud provider "' + cfg.name + '" resolved but no API key available');
+        } else {
+            console.log('CHECK_KEY:REASON=unexpected state');
+        }
+    }
+
+    console.log('');
+    console.log('Verdict: ' + (realKeyPresent ? 'REAL key present — e2e verify can proceed.' : 'NO real key — e2e verify will exit with code 2.'));
 }
 
 /**
