@@ -12,6 +12,11 @@ scaffolded but untested.
   instantiated, real LLM call succeeded, plan returned, staging blocked the
   write, approval callback fired, file NOT written before approval, file
   written after approval with correct content, complete event received.
+- **INTERFACE-READY, BLOCKED on key** — implementation is complete (real
+  HTTP path against the provider's documented API), but no API key is
+  available in the development sandbox to run the real verification call.
+  The verify script exists and prints exact user instructions. See the
+  per-provider note for the exact command to run locally.
 - **INTERFACE-READY, UNTESTED** — implements the interface, compiles cleanly,
   but has NOT been verified with a real LLM call. The stub pattern (delegating
   to `CloudProvider` with provider-specific defaults) means these will likely
@@ -19,22 +24,48 @@ scaffolded but untested.
 
 ## Provider registry
 
-| Name          | Label                            | Status     | Needs key | Offline | Default model                                    |
-|---------------|----------------------------------|------------|-----------|---------|--------------------------------------------------|
-| `anthropic`   | Anthropic Claude                 | VERIFIED   | yes       | no      | `claude-sonnet-4-20250514`                       |
-| `ollama`      | Ollama (local)                   | VERIFIED*  | no        | yes     | auto-selected from `/api/tags`                   |
-| `openrouter`  | OpenRouter                       | VERIFIED** | yes       | no      | `nvidia/nemotron-3-super-120b-a12b:free`         |
-| `openai`      | OpenAI                           | UNTESTED   | yes       | no      | `gpt-4o`                                         |
-| `nvidia`      | NVIDIA NIM                       | UNTESTED   | yes       | no      | `meta/llama-3.3-70b-instruct`                    |
-| `together`    | Together AI                      | UNTESTED   | yes       | no      | `meta-llama/Llama-3.3-70B-Instruct-Turbo`        |
-| `groq`        | Groq                             | UNTESTED   | yes       | no      | `llama-3.3-70b-versatile`                        |
-| `mistral`     | Mistral                          | UNTESTED   | yes       | no      | `mistral-large-latest`                           |
-| `deepseek`    | DeepSeek                         | UNTESTED   | yes       | no      | `deepseek-chat`                                  |
-| `gemini`      | Google Gemini (OpenAI-compat)    | UNTESTED   | yes       | no      | `gemini-1.5-pro`                                 |
-| `lmstudio`    | LM Studio (local)                | UNTESTED   | no        | yes     | `local-model` (loaded in LM Studio)              |
-| `litellm`     | LiteLLM proxy (local)            | UNTESTED   | no        | yes     | `default` (proxy routes it)                      |
-| `xenova`      | Xenova (in-process ONNX)         | UNTESTED   | no        | yes     | (not ported — throws clearly)                    |
-| `custom`      | Custom OpenAI-compatible          | UNTESTED   | yes       | no      | caller-specified                                 |
+| Name          | Label                            | Status       | Needs key | Offline | Default model                                    |
+|---------------|----------------------------------|--------------|-----------|---------|--------------------------------------------------|
+| `anthropic`   | Anthropic Claude                 | VERIFIED     | yes       | no      | `claude-sonnet-4-20250514`                       |
+| `ollama`      | Ollama (local)                   | VERIFIED*    | no        | yes     | auto-selected from `/api/tags`                   |
+| `openrouter`  | OpenRouter                       | VERIFIED**   | yes       | no      | `nvidia/nemotron-3-super-120b-a12b:free`         |
+| `openai`      | OpenAI                           | UNTESTED     | yes       | no      | `gpt-4o`                                         |
+| `nvidia`      | NVIDIA NIM                       | BLOCKED†     | yes       | no      | `meta/llama-3.3-70b-instruct`                    |
+| `together`    | Together AI                      | UNTESTED     | yes       | no      | `meta-llama/Llama-3.3-70B-Instruct-Turbo`        |
+| `groq`        | Groq                             | UNTESTED     | yes       | no      | `llama-3.3-70b-versatile`                        |
+| `mistral`     | Mistral                          | UNTESTED     | yes       | no      | `mistral-large-latest`                           |
+| `deepseek`    | DeepSeek                         | UNTESTED     | yes       | no      | `deepseek-chat`                                  |
+| `gemini`      | Google Gemini (OpenAI-compat)    | UNTESTED     | yes       | no      | `gemini-1.5-pro`                                 |
+| `lmstudio`    | LM Studio (local)                | UNTESTED     | no        | yes     | `local-model` (loaded in LM Studio)              |
+| `litellm`     | LiteLLM proxy (local)            | UNTESTED     | no        | yes     | `default` (proxy routes it)                      |
+| `xenova`      | Xenova (in-process ONNX)         | UNTESTED     | no        | yes     | (not ported — throws clearly)                    |
+| `custom`      | Custom OpenAI-compatible          | UNTESTED     | yes       | no      | caller-specified                                 |
+
+† `nvidia` was promoted from a stub to a dedicated provider class in
+`src/agent/llm/nvidiaProvider.ts`. The HTTP path is real (delegates to
+`CloudProvider` with `provider: 'nvidia'` so the `parallel_tool_calls=false`
+workaround applies), the model list is fetched live from
+`https://integrate.api.nvidia.com/v1/models` when a key is present, and the
+verify script `test/verify-nvidia.ts` makes a real minimal chat call
+("say hello in one word") against the live endpoint. The verification is
+BLOCKED on a real `nvapi-...` API key — no key is available in the
+development sandbox. To verify locally:
+
+```bash
+# Option A — via the UI:
+npm start
+# → click gear icon → pick NVIDIA NIM → paste nvapi-... key →
+# → pick a model → Test connection → Save → close window
+npm run verify:nvidia
+
+# Option B — via env var (dev shortcut):
+NVIDIA_API_KEY=nvapi-... npm run verify:nvidia
+```
+
+The verify script NEVER hardcodes or reuses a credential. If it can't find
+a key, it exits with code 2 (BLOCKED) and prints the exact steps above.
+See `test/transcripts/verify-nvidia-BLOCKED-nokey.txt` for the captured
+sandbox output.
 
 \* `ollama` is verified at the interface level — `checkStatus()` correctly
 reports `unreachable` when Ollama isn't running, and the chat path is
