@@ -59,3 +59,10 @@ export {
     type RefinementSpec,
     type RefinementResult,
 } from './refinement/index.js';
+export {
+    PlanningService,
+    type PlanningServiceConfig,
+    type PlanMilestone,
+    type MilestoneType,
+    type PlanResult,
+} from './planning/index.js';

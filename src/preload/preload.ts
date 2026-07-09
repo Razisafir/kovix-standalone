@@ -88,9 +88,74 @@ contextBridge.exposeInMainWorld('kovixAPI', {
         getModelsForProvider: (provider: string) => ipcRenderer.invoke('kovix:settings:get-models', provider),
     },
 
-    // ---- Phase 0 legacy: agent loop (kept for Phase 2+ Plan/Execute screens) ----
-    plan: (task: string) => ipcRenderer.invoke('kovix:plan', task),
-    execute: (task: string, onEvent: (event: unknown) => void) => {
+    // ---- Phase 2: Spec Approval / Plan / Pre-flight / Execute ----
+    session: {
+        /** Get the current build session state (stage, spec, plan, preflight, execution). */
+        getState: () => ipcRenderer.invoke('kovix:session:get-state'),
+        /** Reset the session back to the Idea stage. */
+        reset: () => ipcRenderer.invoke('kovix:session:reset'),
+    },
+    spec: {
+        /** Update an item in a spec section (before approval only). */
+        updateItem: (payload: { section: 'must' | 'should' | 'wont' | 'doneCriteria'; index: number; value: string }) =>
+            ipcRenderer.invoke('kovix:spec:update-item', payload),
+        /** Add a new item to a spec section (before approval only). */
+        addItem: (payload: { section: 'must' | 'should' | 'wont' | 'doneCriteria'; value: string }) =>
+            ipcRenderer.invoke('kovix:spec:add-item', payload),
+        /** Remove an item from a spec section (before approval only). */
+        removeItem: (payload: { section: 'must' | 'should' | 'wont' | 'doneCriteria'; index: number }) =>
+            ipcRenderer.invoke('kovix:spec:remove-item', payload),
+        /** Approve the spec — locks it and advances to the Plan stage. */
+        approve: () => ipcRenderer.invoke('kovix:spec:approve'),
+    },
+    plan: {
+        /** Generate a milestone plan from the approved spec via the LLM. */
+        generate: () => ipcRenderer.invoke('kovix:plan:generate'),
+        /** Approve the plan — locks it and advances to the Pre-flight stage. */
+        approve: () => ipcRenderer.invoke('kovix:plan:approve'),
+    },
+    preflight: {
+        /** Save the pre-flight config. Validates inputs. */
+        save: (config: { pauseMode: 'every' | 'major' | 'auto' | 'custom'; customPauseIds: string[]; creditLimit: number; verifyAfterEach: boolean }) =>
+            ipcRenderer.invoke('kovix:preflight:save', config),
+        /** Confirm preflight — advances to the Execute stage. */
+        confirm: () => ipcRenderer.invoke('kovix:preflight:confirm'),
+    },
+    exec: {
+        /** Start execution. Returns immediately; events come via onEvent/onStateUpdate/onComplete. */
+        start: () => ipcRenderer.invoke('kovix:exec:start'),
+        /** Resume from a milestone pause. */
+        resume: () => ipcRenderer.invoke('kovix:exec:resume'),
+        /** Skip the current milestone (only valid when paused). */
+        skip: () => ipcRenderer.invoke('kovix:exec:skip'),
+        /** Abort execution. */
+        abort: () => ipcRenderer.invoke('kovix:exec:abort'),
+        /** Register a callback for streaming exec events. Returns unsubscribe. */
+        onEvent: (callback: (event: unknown) => void) => {
+            const listener = (_event: unknown, data: unknown) => callback(data);
+            ipcRenderer.on('kovix:exec:event', listener);
+            return () => ipcRenderer.removeListener('kovix:exec:event', listener);
+        },
+        /** Register a callback for milestone state updates. Returns unsubscribe. */
+        onStateUpdate: (callback: (update: unknown) => void) => {
+            const listener = (_event: unknown, data: unknown) => callback(data);
+            ipcRenderer.on('kovix:exec:state-update', listener);
+            return () => ipcRenderer.removeListener('kovix:exec:state-update', listener);
+        },
+        /** Register a callback for execution completion. Returns unsubscribe. */
+        onComplete: (callback: (result: unknown) => void) => {
+            const listener = (_event: unknown, data: unknown) => callback(data);
+            ipcRenderer.on('kovix:exec:complete', listener);
+            return () => ipcRenderer.removeListener('kovix:exec:complete', listener);
+        },
+    },
+
+    // ---- Phase 0 legacy: agent loop (kept for backward compat with verify.ts) ----
+    // NOTE: renamed from `plan` to `legacyPlan` because Phase 2 added a `plan`
+    // object above (with .generate/.approve). verify.ts uses the --provider flag
+    // directly and doesn't go through this preload, so this is safe to rename.
+    legacyPlan: (task: string) => ipcRenderer.invoke('kovix:plan', task),
+    legacyExecute: (task: string, onEvent: (event: unknown) => void) => {
         const listener = (_event: unknown, data: unknown) => onEvent(data);
         ipcRenderer.on('kovix:event', listener);
         return ipcRenderer.invoke('kovix:execute', task).finally(() => {
