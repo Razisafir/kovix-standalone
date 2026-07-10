@@ -205,15 +205,16 @@ contextBridge.exposeInMainWorld('kovixAPI', {
         });
     },
 
-    // ---- Phase 3: Mission Control (3-pane UI + approval gate) ----
+    // ---- Phase 5: Mission Control (3-pane UI + approval gate + verification) ----
+    // Wires the renderer to the MilestoneTaskRunner backend via IPC.
     mission: {
         /**
-         * Start a mission: runs runMilestoneTask(prompt) in the main process.
+         * Start a mission: runs MilestoneTaskRunner.runMilestoneTask(prompt).
          * Events stream back via the on* callbacks below. Returns the final
-         * plan + ok flag when the mission completes.
+         * milestone list + ok flag when the mission completes.
          */
         start: (prompt: string) => ipcRenderer.invoke('kovix:mc:start', prompt),
-        /** Approve a pending destructive tool call. Unblocks the agent loop. */
+        /** Approve a pending destructive tool call. Unblocks the runner. */
         approve: (callId: string) => ipcRenderer.invoke('kovix:mc:approve', callId),
         /** Reject a pending destructive tool call. The LLM sees an error and adapts. */
         reject: (callId: string) => ipcRenderer.invoke('kovix:mc:reject', callId),
@@ -250,8 +251,8 @@ contextBridge.exposeInMainWorld('kovixAPI', {
             ipcRenderer.on('kovix:mc:tool-call', listener);
             return () => ipcRenderer.removeListener('kovix:mc:tool-call', listener);
         },
-        onToolResult: (callback: (payload: { callId: string; result: { ok: boolean; output: string } }) => void) => {
-            const listener = (_e: unknown, data: unknown) => callback(data as { callId: string; result: { ok: boolean; output: string } });
+        onToolResult: (callback: (payload: { callId: string; name: string; output: string; success: boolean }) => void) => {
+            const listener = (_e: unknown, data: unknown) => callback(data as { callId: string; name: string; output: string; success: boolean });
             ipcRenderer.on('kovix:mc:tool-result', listener);
             return () => ipcRenderer.removeListener('kovix:mc:tool-result', listener);
         },
@@ -259,6 +260,11 @@ contextBridge.exposeInMainWorld('kovixAPI', {
             const listener = (_e: unknown, data: unknown) => callback(data as { callId: string; name: string; args: unknown });
             ipcRenderer.on('kovix:mc:approval-required', listener);
             return () => ipcRenderer.removeListener('kovix:mc:approval-required', listener);
+        },
+        onVerificationResult: (callback: (payload: { milestoneId: string; passed: boolean; reason: string }) => void) => {
+            const listener = (_e: unknown, data: unknown) => callback(data as { milestoneId: string; passed: boolean; reason: string });
+            ipcRenderer.on('kovix:mc:verification-result', listener);
+            return () => ipcRenderer.removeListener('kovix:mc:verification-result', listener);
         },
         onFileTree: (callback: (entries: string[]) => void) => {
             const listener = (_e: unknown, data: string[]) => callback(data);

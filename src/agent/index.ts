@@ -36,6 +36,8 @@ export {
     type MilestoneFailedPayload,
     type CompletePayload,
     type ErrorPayload,
+    type ApprovalRequiredPayload,
+    type LlmTextPayload,
     parsePlannedMilestones,
 } from './milestoneTaskRunner.js';
 export { OllamaProvider, type OllamaProviderConfig } from './llm/ollamaProvider.js';

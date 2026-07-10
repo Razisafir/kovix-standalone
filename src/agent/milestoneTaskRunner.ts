@@ -31,13 +31,23 @@
  * EVENTS EMITTED:
  *   - 'plan_ready'             { milestones: Milestone[] }
  *   - 'milestone_started'      { milestone: Milestone }
+ *   - 'llm_text'               { text: string }            (Phase 5)
  *   - 'tool_call'              { callId, name, args }
  *   - 'tool_result'            { callId, name, output, success }
+ *   - 'approval_required'      { callId, name, args }      (Phase 5)
  *   - 'verification_result'    { milestoneId, passed, reason }
  *   - 'milestone_verified'     { milestone: Milestone }
  *   - 'milestone_failed'       { milestone: Milestone, reason: string }
  *   - 'complete'               { milestones: Milestone[] }
  *   - 'error'                  { message: string }
+ *
+ * APPROVAL GATE (Phase 5):
+ *   When `requireApproval: true`, destructive tools (write_file, edit_file)
+ *   pause execution after staging but before disk-write. The runner emits
+ *   'approval_required' and awaits approveToolCall(callId) / rejectToolCall(callId).
+ *   Approve -> apply staged write + return success. Reject -> return an error
+ *   string to the LLM (no disk write). Non-destructive tools (read_file,
+ *   list_files) bypass the gate and execute immediately.
  *
  * MILESTONE LIFECYCLE:
  *   PLANNED -> EXECUTING -> (verification gate) -> VERIFIED | FAILED
@@ -113,6 +123,14 @@ export interface MilestoneTaskRunnerConfig {
      * approvals via the staging layer + an external approver.
      */
     autoApplyWrites?: boolean;
+    /**
+     * Phase 5: when true, destructive tools (write_file, edit_file) emit
+     * 'approval_required' and block until approveToolCall(callId) or
+     * rejectToolCall(callId) is called. Default false (tests / headless runs
+     * use autoApplyWrites and skip the gate). The Mission Control UI sets
+     * this to true so the user sees an Approval Card before any disk write.
+     */
+    requireApproval?: boolean;
 }
 
 // ----------------------------------------------------------------------
@@ -120,6 +138,13 @@ export interface MilestoneTaskRunnerConfig {
 // ----------------------------------------------------------------------
 
 const DEFAULT_MAX_ITERATIONS = 15;
+
+/**
+ * Tools that mutate the workspace and therefore require explicit user
+ * approval when the runner is in requireApproval mode. Read-only tools
+ * (read_file, list_files) skip the gate.
+ */
+const DESTRUCTIVE_TOOLS = new Set<string>(['write_file', 'edit_file']);
 
 const PLANNING_SYSTEM_PROMPT = `You are a senior engineering lead. Decompose the user's task into an ordered list of milestones.
 
@@ -189,6 +214,14 @@ export interface CompletePayload {
 export interface ErrorPayload {
     message: string;
 }
+export interface ApprovalRequiredPayload {
+    callId: string;
+    name: string;
+    args: unknown;
+}
+export interface LlmTextPayload {
+    text: string;
+}
 
 // ----------------------------------------------------------------------
 // Runner
@@ -200,6 +233,8 @@ export class MilestoneTaskRunner extends EventEmitter {
     private readonly pendingChanges: PendingChanges;
     private readonly rateLimiter = new TerminalRateLimiter();
     private milestones: Milestone[] = [];
+    /** Phase 5: callId -> resolver for approval gate. */
+    private readonly pendingApprovals = new Map<string, (approved: boolean) => void>();
 
     constructor(config: MilestoneTaskRunnerConfig) {
         super();
@@ -209,6 +244,7 @@ export class MilestoneTaskRunner extends EventEmitter {
             log: config.log ?? (() => undefined),
             maxIterations: config.maxIterations ?? DEFAULT_MAX_ITERATIONS,
             autoApplyWrites: config.autoApplyWrites ?? true,
+            requireApproval: config.requireApproval ?? false,
         };
         this.pendingChanges = new PendingChanges(config.workspaceRoot);
     }
@@ -216,6 +252,40 @@ export class MilestoneTaskRunner extends EventEmitter {
     /** Snapshot of the current milestone plan and statuses. */
     getMilestones(): Milestone[] {
         return this.milestones.map(m => ({ ...m }));
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 5: Approval gate public API
+    // ------------------------------------------------------------------
+
+    /**
+     * Approve a pending destructive tool call. Resolves the internal promise
+     * so executeOneToolCall proceeds to apply the staged write.
+     */
+    approveToolCall(callId: string): void {
+        const resolve = this.pendingApprovals.get(callId);
+        if (resolve) {
+            this.pendingApprovals.delete(callId);
+            resolve(true);
+            this.config.log(`[MilestoneTaskRunner] Approved tool call ${callId}`);
+        } else {
+            this.config.log(`[MilestoneTaskRunner] approveToolCall: no pending approval for ${callId}`);
+        }
+    }
+
+    /**
+     * Reject a pending destructive tool call. The tool is NOT executed; the
+     * LLM receives an error string so it can adapt.
+     */
+    rejectToolCall(callId: string): void {
+        const resolve = this.pendingApprovals.get(callId);
+        if (resolve) {
+            this.pendingApprovals.delete(callId);
+            resolve(false);
+            this.config.log(`[MilestoneTaskRunner] Rejected tool call ${callId}`);
+        } else {
+            this.config.log(`[MilestoneTaskRunner] rejectToolCall: no pending approval for ${callId}`);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -340,6 +410,11 @@ export class MilestoneTaskRunner extends EventEmitter {
         for (let iter = 0; iter < this.config.maxIterations; iter++) {
             const response = await this.config.llm.chat(history, tools);
 
+            // Phase 5: surface assistant text to the UI (streaming-style feed).
+            if (response.content) {
+                this.emit('llm_text', { text: response.content } satisfies LlmTextPayload);
+            }
+
             // Record the assistant turn (with any tool_calls).
             const assistantMsg: LLMMessage = {
                 role: 'assistant',
@@ -453,14 +528,44 @@ export class MilestoneTaskRunner extends EventEmitter {
         parsedArgs: unknown,
     ): Promise<{ output: string; success: boolean }> {
         const args = (parsedArgs ?? {}) as Record<string, unknown>;
+        const toolName = call.function.name;
+
+        // Phase 5: Approval gate for destructive tools.
+        //
+        // ORDER MATTERS: the resolver MUST be registered in `pendingApprovals`
+        // BEFORE the 'approval_required' event is emitted. Otherwise, a
+        // listener that calls `approveToolCall` / `rejectToolCall`
+        // synchronously (e.g. a unit test, or a UI that resolves within the
+        // same tick) would find no pending entry and the runner would
+        // deadlock on the await below. The Promise executor runs
+        // synchronously during `new Promise(...)`, so doing the set inside
+        // the executor and the emit immediately after is safe.
+        if (this.config.requireApproval && DESTRUCTIVE_TOOLS.has(toolName)) {
+            this.config.log(`[MilestoneTaskRunner] Awaiting approval for ${toolName} (${call.id})`);
+            const approved = await new Promise<boolean>(resolve => {
+                this.pendingApprovals.set(call.id, resolve);
+                this.emit('approval_required', {
+                    callId: call.id,
+                    name: toolName,
+                    args,
+                } satisfies ApprovalRequiredPayload);
+            });
+            if (!approved) {
+                return {
+                    output: 'Error: User rejected this tool call.',
+                    success: false,
+                };
+            }
+        }
+
         const ctx = this.getToolContext();
-        const result = await executeTool(call.function.name, args, ctx, false);
+        const result = await executeTool(toolName, args, ctx, false);
 
         // If this was a write_file / edit_file and the runner is in
         // autoApplyWrites mode, flush the staged change to disk now.
         if (
             this.config.autoApplyWrites &&
-            (call.function.name === 'write_file' || call.function.name === 'edit_file') &&
+            DESTRUCTIVE_TOOLS.has(toolName) &&
             result.success
         ) {
             const pathArg = typeof args.path === 'string' ? args.path : '';

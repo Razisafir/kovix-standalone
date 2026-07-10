@@ -54,6 +54,8 @@ import {
     type SettingsPreview,
 } from './settingsStore.js';
 import { testConnection, type TestConnectionInput, type TestConnectionResult } from './testConnection.js';
+import { MISSION_CONTROL_HTML } from './missionControlHtml.js';
+import { setupMissionControlIpc, getProviderSummary } from './missionControlIpc.js';
 import {
     createEmptySession,
     defaultPreflightConfig,
@@ -196,6 +198,7 @@ function createWindow(): void {
         title: 'Kovix — Mission Control',
     });
 
+    // Phase 5: load the Mission Control 3-pane UI (replaces the old Build Mode HTML).
     mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(MISSION_CONTROL_HTML));
 
     // Screenshot support for headless verification. When KOVIX_SCREENSHOT is
@@ -1633,6 +1636,19 @@ ipcMain.handle('kovix:execute', async (_event, task: string) => {
 // App lifecycle
 // ----------------------------------------------------------------------
 
+/**
+ * Phase 5: Resolve the workspace root for Mission Control missions.
+ *
+ * Returns the current working directory. In a packaged app this is the
+ * directory the app was launched from; in dev it's the repo root. A
+ * future improvement could let the user pick a workspace folder via a
+ * dialog and persist it in settings — for now, cwd is a sensible default
+ * that matches what the Phase 1 refinement loop already uses.
+ */
+function resolveWorkspaceRoot(): string {
+    return process.cwd();
+}
+
 app.whenReady().then(async () => {
     // KOVIX_VERIFY=1: headless verification mode. Reads provider config from
     // the settings store (the same path the UI uses), runs the refinement
@@ -1714,11 +1730,14 @@ app.whenReady().then(async () => {
     }
 
     createWindow();
-    // Phase 3: wire Mission Control IPC (3-pane UI + approval gate).
+    // Phase 5: wire the Mission Control IPC bridge (mc:start / approve / reject / file-tree).
+    // Resolves the workspace root from the same path the Build Mode used.
     setupMissionControlIpc(
         () => mainWindow,
-        getEffectiveWorkspaceDir,
+        async () => resolveWorkspaceRoot(),
     );
+    // Log the active provider (helpful for debugging "no provider configured").
+    getProviderSummary().then((label: string) => console.log(`[kovix] Provider: ${label}`));
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
             createWindow();
