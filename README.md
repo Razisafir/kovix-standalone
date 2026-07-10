@@ -1,4 +1,8 @@
-# Kovix
+<p align="center">
+  <img src="build/icon-256.png" width="128" height="128" alt="Kovix logo" />
+</p>
+
+<h1 align="center">Kovix</h1>
 
 > Agent-first desktop build tool. You type an idea. Kovix refines it with you into a
 > spec, plans the milestones, and an autonomous agent builds the files — pausing for

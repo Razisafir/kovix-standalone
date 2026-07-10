@@ -2670,8 +2670,14 @@ const BUILD_MODE_HTML = `<!doctype html>
   }
   .brand {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 10px;
+  }
+  .brand-logo {
+    width: 26px;
+    height: 26px;
+    display: block;
+    flex-shrink: 0;
   }
   .brand-mark {
     font-weight: 700;
@@ -3935,6 +3941,32 @@ const BUILD_MODE_HTML = `<!doctype html>
 <div class="app">
   <header class="topbar">
     <div class="brand">
+      <svg class="brand-logo" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="brand-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#0E1430"/>
+            <stop offset="100%" stop-color="#06080F"/>
+          </linearGradient>
+          <linearGradient id="brand-hex" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#22D3EE"/>
+            <stop offset="100%" stop-color="#3B82F6"/>
+          </linearGradient>
+          <linearGradient id="brand-k" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#F0F9FF"/>
+            <stop offset="100%" stop-color="#A5F3FC"/>
+          </linearGradient>
+        </defs>
+        <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220" fill="url(#brand-bg)"/>
+        <polygon points="512,150 822,329 822,687 512,866 202,687 202,329" fill="none" stroke="url(#brand-hex)" stroke-width="22" stroke-linejoin="round"/>
+        <polygon points="512,235 748,371 748,645 512,781 276,645 276,371" fill="#0B1228" stroke="#1E293B" stroke-width="3" stroke-linejoin="round"/>
+        <g fill="url(#brand-k)">
+          <rect x="416" y="320" width="68" height="384" rx="18"/>
+          <polygon points="484,512 484,608 700,320 700,420"/>
+          <polygon points="484,512 484,608 700,704 700,604"/>
+        </g>
+        <circle cx="800" cy="232" r="22" fill="#22D3EE"/>
+        <circle cx="800" cy="232" r="10" fill="#0B1228"/>
+      </svg>
       <span class="brand-mark">Kovix</span>
       <span class="brand-mode">Build Mode</span>
     </div>

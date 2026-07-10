@@ -7,6 +7,14 @@ name: Release
 # Trigger this workflow for an existing tag via the Actions UI, or via:
 #   POST /repos/{owner}/{repo}/actions/workflows/release.yml/dispatches
 #   { "ref": "main", "inputs": { "tag": "v1.0.0" } }
+#
+# Why --publish never + gh release upload (instead of --publish always):
+#   electron-builder's --publish always refuses to upload to a release whose
+#   type (pre-release) doesn't match its publishing type (draft), with the
+#   error: "existing type not compatible with publishing type". `gh release
+#   upload` doesn't care about pre-release vs draft, handles concurrent
+#   uploads from the 3-OS matrix safely (idempotent --clobber), and retries
+#   on transient 5xx. This is the more robust path.
 
 on:
   push:
@@ -20,7 +28,7 @@ on:
         default: 'v1.0.0'
 
 permissions:
-  contents: write   # required by electron-builder to upload assets to the Release
+  contents: write   # required by `gh release upload` to attach assets
 
 jobs:
   build:
@@ -62,18 +70,31 @@ jobs:
       - name: Build app bundles (esbuild)
         run: npm run build:bundle
 
-      - name: Build installers (electron-builder)
+      - name: Build installers (electron-builder, no publish)
         # Pin electron-builder to v25.1.8 (matches devDependencies). Don't use
         # `npx electron-builder` without a version — it fetches v26 which has
         # breaking asar changes. Don't use `node_modules/.bin/electron-builder`
         # — npm's allow-scripts policy doesn't create the bin link on CI.
-        run: npx electron-builder@25.1.8 --${{ matrix.target }} --publish always
-        env:
-          # GitHub token provided automatically by Actions; electron-builder
-          # uses it to upload the binaries to the matching Release.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # --publish never: we upload via `gh release upload` below, which is
+        # robust against prerelease-vs-draft type conflicts and concurrent
+        # uploads from the 3-OS matrix.
+        run: npx electron-builder@25.1.8 --${{ matrix.target }} --publish never
 
-      - name: Upload artifacts (workflow artifacts UI)
+      - name: Upload installers to GitHub Release
+        # `gh release upload` is idempotent (--clobber overwrites existing
+        # assets with the same name) and works regardless of whether the
+        # release is marked as pre-release or draft. The tag name is the
+        # release name (Kovix uses `v1.0.0` style tags).
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          # shellcheck disable=SC2086
+          gh release upload "$TAG" ${{ matrix.artifact_glob }} --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload artifacts (workflow artifacts UI, fallback)
         if: always()
         uses: actions/upload-artifact@v4
         with:

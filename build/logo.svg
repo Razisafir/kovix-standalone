@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"  stop-color="#0E1430"/>
+      <stop offset="55%" stop-color="#0B0E1A"/>
+      <stop offset="100%" stop-color="#06080F"/>
+    </linearGradient>
+    <linearGradient id="hexStroke" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"  stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#3B82F6"/>
+    </linearGradient>
+    <linearGradient id="kFill" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"  stop-color="#F0F9FF"/>
+      <stop offset="100%" stop-color="#A5F3FC"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDevi="14"/>
+      <feOffset dx="0" dy="6" result="off"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.45"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect x="0" y="0" width="1024" height="1024" rx="220" ry="220" fill="url(#bg)"/>
+
+  <!-- Outer hex ring (the 6-stage pipeline) -->
+  <g filter="url(#soft)">
+    <polygon
+      points="512,150 822,329 822,687 512,866 202,687 202,329"
+      fill="none" stroke="url(#hexStroke)" stroke-width="22" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Inner hex (filled, gives depth) -->
+  <polygon
+    points="512,235 748,371 748,645 512,781 276,645 276,371"
+    fill="#0B1228" stroke="#1E293B" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- Stylised K: vertical spine + chevron, chevron's right arm extends past the spine -->
+  <g fill="url(#kFill)">
+    <!-- Spine -->
+    <rect x="416" y="320" width="68" height="384" rx="18"/>
+    <!-- Left arm of chevron -->
+    <polygon points="484,512 484,608 700,320 700,420"/>
+    <!-- Right arm of chevron (extended past spine -> forward motion) -->
+    <polygon points="484,512 484,608 700,704 700,604"/>
+  </g>
+
+  <!-- Subtle accent dot at top-right of hex (the "shipped" indicator) -->
+  <circle cx="800" cy="232" r="22" fill="#22D3EE"/>
+  <circle cx="800" cy="232" r="10" fill="#0B1228"/>
+</svg>
