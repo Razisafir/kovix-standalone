@@ -50,10 +50,10 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
-      - name: Setup Node 20
+      - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -63,7 +63,9 @@ jobs:
         run: npm run build:bundle
 
       - name: Build installers (electron-builder)
-        run: npx electron-builder --${{ matrix.target }} --publish always
+        # Use the local electron-builder binary (v25, pinned in devDependencies)
+        # instead of `npx` which would fetch the latest v26 and break.
+        run: node_modules/.bin/electron-builder --${{ matrix.target }} --publish always
         env:
           # GitHub token provided automatically by Actions; electron-builder
           # uses it to upload the binaries to the matching Release.
