@@ -57,6 +57,77 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 const args = parseArgs(process.argv);
 
+// ----------------------------------------------------------------------
+// Detect set provider env vars — for the multi-env-var warning below.
+// NEVER returns key values, only names and lengths.
+// ----------------------------------------------------------------------
+
+interface DetectedProviderEnv {
+    varName: string;
+    keyLength: number;
+}
+
+/**
+ * Scans the environment for known provider env vars. Used by
+ * printProviderEnvWarning() to surface the silent-priority bug: when
+ * multiple provider env vars are set simultaneously, the detection chain
+ * picks exactly one (ANTHROPIC > OPENROUTER > NVIDIA > OLLAMA) and the
+ * others are silently ignored — which has caused real confusion in
+ * practice (e.g. a stale ANTHROPIC_API_KEY shadowing a fresh
+ * OPENROUTER_API_KEY).
+ *
+ * Returns entries in priority order (highest first), matching the order
+ * resolveProviderConfig() checks them in.
+ */
+function detectSetProviderEnvVars(): DetectedProviderEnv[] {
+    const candidates: Array<{ varName: string; envName: string }> = [
+        { varName: 'ANTHROPIC_API_KEY', envName: 'ANTHROPIC_API_KEY' },
+        { varName: 'OPENROUTER_API_KEY', envName: 'OPENROUTER_API_KEY' },
+        { varName: 'NVIDIA_API_KEY', envName: 'NVIDIA_API_KEY' },
+    ];
+    const detected: DetectedProviderEnv[] = [];
+    for (const { varName, envName } of candidates) {
+        const val = process.env[envName];
+        if (val && val.length > 0) {
+            detected.push({ varName, keyLength: val.length });
+        }
+    }
+    if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_MODEL) {
+        detected.push({ varName: 'OLLAMA_BASE_URL / OLLAMA_MODEL', keyLength: 0 });
+    }
+    return detected;
+}
+
+/**
+ * Prints a clear warning when multiple provider env vars are set at once,
+ * explaining which one was picked and why. This prevents the silent
+ * shadowing bug where a user sets OPENROUTER_API_KEY but a stale
+ * ANTHROPIC_API_KEY from an old shell profile silently wins.
+ *
+ * Only called when --provider was NOT passed (env detection ran).
+ */
+function printProviderEnvWarning(pickedLabel: string): void {
+    const detected = detectSetProviderEnvVars();
+    if (detected.length <= 1) {
+        return; // No ambiguity — nothing to warn about.
+    }
+    console.log('--- provider env-var warning ---');
+    console.log(`⚠  Multiple provider env vars are set (${detected.length}).`);
+    console.log('   Detection priority is fixed: ANTHROPIC > OPENROUTER > NVIDIA > OLLAMA.');
+    console.log('   Detected (in priority order):');
+    for (const d of detected) {
+        const lenPart = d.keyLength > 0 ? ` (key length ${d.keyLength})` : ' (no key — base URL / model)';
+        console.log(`     - ${d.varName}${lenPart}`);
+    }
+    console.log(`   Picked: ${pickedLabel} — it has the highest priority among the set vars.`);
+    console.log('   If this is not what you intended, override with:');
+    console.log('     npx tsx test/verify-refine.ts --provider <anthropic|openrouter|nvidia|ollama> [--api-key <key>] [--model <id>]');
+    console.log('   Or unset the shadowing var for this session, e.g. in PowerShell:');
+    console.log('     $env:ANTHROPIC_API_KEY = $null');
+    console.log('--------------------------------');
+    console.log('');
+}
+
 function resolveProviderConfig(): { name: ProviderName; apiKey?: string; modelId?: string; baseUrl?: string; label: string } {
     if (args.provider) {
         return {
@@ -186,6 +257,13 @@ async function main(): Promise<void> {
     console.log('');
 
     const providerConfig = resolveProviderConfig();
+    // Surface the silent-shadowing bug: if multiple provider env vars are
+    // set and the user did NOT pass --provider, warn them about which one
+    // was picked and why. No-op when --provider was used or only one var
+    // is set.
+    if (!args.provider) {
+        printProviderEnvWarning(providerConfig.label);
+    }
     console.log('Provider: ' + providerConfig.name + ' (' + providerConfig.label + ')');
     const maskedKey = providerConfig.apiKey
         ? providerConfig.apiKey.slice(0, 12) + '...' + providerConfig.apiKey.slice(-4)
