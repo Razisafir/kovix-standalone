@@ -37,7 +37,9 @@
     "dist:mac": "npm run build:bundle && electron-builder --mac",
     "dist:publish": "npm run build:bundle && electron-builder --publish always"
   },
-  "dependencies": {},
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "electron": "^33.0.0",
