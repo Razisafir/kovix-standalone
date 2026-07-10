@@ -63,9 +63,11 @@ jobs:
         run: npm run build:bundle
 
       - name: Build installers (electron-builder)
-        # Use the local electron-builder binary (v25, pinned in devDependencies)
-        # instead of `npx` which would fetch the latest v26 and break.
-        run: node_modules/.bin/electron-builder --${{ matrix.target }} --publish always
+        # Pin electron-builder to v25.1.8 (matches devDependencies). Don't use
+        # `npx electron-builder` without a version — it fetches v26 which has
+        # breaking asar changes. Don't use `node_modules/.bin/electron-builder`
+        # — npm's allow-scripts policy doesn't create the bin link on CI.
+        run: npx electron-builder@25.1.8 --${{ matrix.target }} --publish always
         env:
           # GitHub token provided automatically by Actions; electron-builder
           # uses it to upload the binaries to the matching Release.
