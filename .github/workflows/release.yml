@@ -49,7 +49,7 @@ jobs:
           - os: windows-latest
             os_name: Windows
             target: win
-            artifact_glob: release/Kovix-*.exe release/Kovix-*.7z
+            artifact_glob: release/Kovix-*.exe
 
     steps:
       - name: Checkout tag
@@ -85,14 +85,30 @@ jobs:
         # assets with the same name) and works regardless of whether the
         # release is marked as pre-release or draft. The tag name is the
         # release name (Kovix uses `v1.0.0` style tags).
+        #
+        # We use bash `nullglob` so non-matching globs (e.g. when a target
+        # fails to produce a file) expand to nothing instead of the literal
+        # pattern — `gh` errors out if it receives a glob it can't match,
+        # so we expand first and only pass real paths. If NO files match,
+        # we exit with an explicit error.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
+          shopt -s nullglob
           TAG="${{ inputs.tag || github.ref_name }}"
-          # shellcheck disable=SC2086
-          gh release upload "$TAG" ${{ matrix.artifact_glob }} --clobber --repo "$GITHUB_REPOSITORY"
+          FILES=()
+          for f in ${{ matrix.artifact_glob }}; do
+            FILES+=("$f")
+          done
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "::error::No installer files found matching ${{ matrix.artifact_glob }}"
+            exit 1
+          fi
+          echo "Uploading ${#FILES[@]} file(s) to release $TAG:"
+          printf '  - %s\n' "${FILES[@]}"
+          gh release upload "$TAG" "${FILES[@]}" --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Upload artifacts (workflow artifacts UI, fallback)
         if: always()
