@@ -33,6 +33,7 @@ import { RefinementService, type RefinementSpec } from '../src/agent/refinement/
 import { PlanningService } from '../src/agent/planning/planningService.js';
 import { AgentLoop } from '../src/agent/agentLoop.js';
 import { AGENT_PRINCIPLES_CONTRACT } from '../src/agent/agentPrinciples.js';
+import { ProviderStatus } from '../src/agent/llm/types.js';
 import type {
     IConstructAIProvider,
     IChatMessage,
@@ -41,7 +42,6 @@ import type {
     IToolDefinition,
     AIStreamEvent,
     AIProviderType,
-    ProviderStatus,
 } from '../src/agent/llm/types.js';
 
 // ----------------------------------------------------------------------

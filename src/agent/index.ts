@@ -20,6 +20,8 @@ export type {
     IChatOptions,
     IModelInfo,
     AIProviderType,
+} from './llm/types.js';
+export {
     ProviderStatus,
     ConstructAuthError,
     ConstructRateLimitError,

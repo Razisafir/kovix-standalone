@@ -57,13 +57,13 @@
  */
 
 import { AgentLoop, type AgentLoopConfig } from '../agentLoop.js';
-import type { AgentLoopEvent } from '../../events.js';
+import type { AgentLoopEvent } from '../events.js';
 import type {
     IConstructAIProvider,
-} from '../../llm/types.js';
-import type { PlanMilestone } from '../../planning/planningService.js';
-import type { RefinementSpec } from '../../refinement/refinementService.js';
-import type { IMilestone, IApprovedPlan } from '../../milestoneStateMachine.js';
+} from '../llm/types.js';
+import type { PlanMilestone } from '../planning/planningService.js';
+import type { RefinementSpec } from '../refinement/refinementService.js';
+import type { IMilestone, IApprovedPlan } from '../milestoneStateMachine.js';
 
 // ----------------------------------------------------------------------
 // Public types
@@ -183,7 +183,7 @@ export class LeadAgentService {
             //   - the milestone's name + description
             //   - explicit instruction to focus ONLY on this milestone
             const satisfiesBlock = milestone.satisfies.length > 0
-                ? milestone.satisfies.map(s => '  - ' + s).join('\n')
+                ? milestone.satisfies.map((s: string) => '  - ' + s).join('\n')
                 : '  (no specific spec requirements — supporting work)';
             const task = `You are a worker agent. Your scope is ONE milestone of a larger build. Do ONLY this milestone — do not start the next one.
 
@@ -192,9 +192,9 @@ ORIGINAL IDEA:
 
 APPROVED SPEC (for context — your milestone addresses the items listed below):
   must:
-${spec.must.map(s => '    - ' + s).join('\n')}
+${spec.must.map((s: string) => '    - ' + s).join('\n')}
   doneCriteria:
-${spec.doneCriteria.map(s => '    - ' + s).join('\n')}
+${spec.doneCriteria.map((s: string) => '    - ' + s).join('\n')}
 
 YOUR MILESTONE (${i + 1} of ${milestones.length}): ${milestone.name}
   description: ${milestone.description}

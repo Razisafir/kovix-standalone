@@ -49,6 +49,7 @@ import { LeadAgentService } from '../src/agent/leadAgent/leadAgentService.js';
 import type { LeadAgentEvent, WorkerReport } from '../src/agent/leadAgent/leadAgentService.js';
 import type { PlanMilestone } from '../src/agent/planning/planningService.js';
 import type { RefinementSpec } from '../src/agent/refinement/refinementService.js';
+import { ProviderStatus } from '../src/agent/llm/types.js';
 import type {
     IConstructAIProvider,
     IChatMessage,
@@ -57,7 +58,6 @@ import type {
     IToolDefinition,
     AIStreamEvent,
     AIProviderType,
-    ProviderStatus,
 } from '../src/agent/llm/types.js';
 
 // ----------------------------------------------------------------------
