@@ -1,21 +1,111 @@
-MIT License
+PolyForm Noncommercial License 1.0.0
 
-Copyright (c) 2025 Razisafir
+Copyright (c) 2025 Razisafir (the "Licensor")
+All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+`sourceURL`: https://github.com/Razisafir/kovix-standalone
+`scope`: source code, build output, documentation, and screenshots in this repository.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+This PolyForm Noncommercial License ("License") is a copyright license and a
+contract for the use of the software defined above ("Software"). The Licensor
+grants You the rights in this License in exchange for Your compliance with its
+terms. If You do not accept and comply with this License, You do not have any
+rights to the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+1. Source Code License
+
+   1.1 The Licensor grants You a worldwide, royalty-free, non-exclusive,
+       non-sublicensable, non-transferable license to copy, prepare Derivative
+       Works of, publicly display, publicly perform, and distribute the Source
+       Code of the Software and Derivative Works of the Software, subject to
+       the conditions in Section 2.
+
+   1.2 You may distribute the Software or Derivative Works of the Software,
+       in Source or Object form, only under this License. You may not offer
+       or impose any additional or different terms or conditions on the
+       Software or on any part of it.
+
+2. Conditions
+
+   2.1 You must give anyone who receives a copy of the Software or a Derivative
+       Work of the Software a copy of this License.
+
+   2.2 You must cause any Derivative Work of the Software to carry prominent
+       notices stating that You changed it.
+
+   2.3 You must not use the Software or any Derivative Work of the Software
+       for any Commercial Use. "Commercial Use" means any use of the Software
+       or Derivative Work of the Software, by You or on Your behalf, in whole
+       or in part, for monetary gain, financial benefit, or business advantage,
+       including without limitation:
+
+         (a) use of the Software, in whole or in part, in or as part of a
+             product, service, or offering that You sell, license, lease,
+             rent, host, operate as a service (SaaS / managed service), or
+             otherwise make available for a fee or other consideration;
+
+         (b) use of the Software, in whole or in part, internally in Your
+             business where the output of the Software contributes to revenue
+             generation, cost reduction, or other commercial benefit;
+
+         (c) use of the Software, in whole or in part, to train, evaluate,
+             benchmark, distil, or otherwise improve any machine learning
+             model that is itself used for a Commercial Use; and
+
+         (d) use of the Software, in whole or in part, by an employee,
+             contractor, or agent of a commercial entity in the course of
+             their work for that entity.
+
+   2.4 Use of the Software for personal learning, research, teaching,
+       non-commercial hobby projects, and contributions back to this project
+       is permitted, provided that no Commercial Use as defined in Section
+       2.3 is made of the Software or any Derivative Work of the Software.
+
+   2.5 You must not remove, alter, obscure, or fail to display any copyright,
+       attribution, or license notice that appears in the Software or in any
+       file included with the Software.
+
+3. Patents
+
+   This License does not grant any rights to any patent or patent application
+   owned by the Licensor. No patent license, express or implied, is granted
+   by the Licensor under this License.
+
+4. Disclaimer
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT WILL
+   THE LICENSOR BE LIABLE TO YOU FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING OUT OF OR RELATED TO
+   THIS LICENSE OR THE USE OF OR INABILITY TO USE THE SOFTWARE, HOWEVER CAUSED
+   AND UNDER ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+   OR TORT.
+
+5. Term and Termination
+
+   5.1 This License runs for the term of the Licensor's copyright in the
+       Software.
+
+   5.2 This License terminates automatically if You fail to comply with any
+       of its terms. On termination, You must stop exercising all rights
+       granted by this License, destroy all copies of the Software and
+       Derivative Works of the Software in Your possession or control, and
+       cease all Commercial Use and non-commercial use of the Software.
+
+   5.3 Termination does not affect any rights or obligations that accrued
+       before termination.
+
+6. Reservation
+
+   All rights not expressly granted to You in this License are reserved by
+   the Licensor. No additional rights are granted by implication, estoppel,
+   or otherwise. If you wish to use the Software for any Commercial Use,
+   you must obtain a separate commercial license from the Licensor in
+   writing. To request a commercial license, open an issue in the repository
+   at the `sourceURL` above.
+
+---
+
+For the canonical text of the PolyForm Noncommercial License 1.0.0, see:
+https://polyformproject.org/licenses/noncommercial/1.0.0/

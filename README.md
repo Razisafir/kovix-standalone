@@ -21,8 +21,12 @@ should pause.
 
 ## Status
 
-**Pre-alpha.** Verified paths work end-to-end with real LLM calls; rough edges and
-missing features are documented honestly in [LIMITATIONS.md](./LIMITATIONS.md).
+**v1.0.0 — pre-alpha.** Verified paths work end-to-end with real LLM calls;
+rough edges and missing features are documented honestly in
+[LIMITATIONS.md](./LIMITATIONS.md). The v1.0.0 tag marks the first public
+release of the standalone extraction; the agent core is stable, the shell is
+functional, and the contract for contributors is fixed by the PolyForm
+Noncommercial license.
 
 What's verified:
 - The **Anthropic Claude** provider path: idea → refinement → spec → plan → pre-flight →
@@ -298,25 +302,62 @@ scripts do):
 
 ---
 
-## License
+## License — PolyForm Noncommercial 1.0.0
 
-MIT. See [LICENSE](./LICENSE).
+Kovix is released under the **PolyForm Noncommercial License 1.0.0** — see
+[LICENSE](./LICENSE). The short version:
+
+- **You CAN** read, study, and run the code for personal learning, research,
+  teaching, and non-commercial hobby projects.
+- **You CAN** submit issues and open pull requests back to this repository.
+- **You CAN** fork the repository to prepare a contribution back upstream.
+- **You CANNOT** use Kovix, in whole or in part, for any commercial purpose,
+  including: selling it, embedding it in a paid product or SaaS, hosting it as
+  a managed service, or using it internally in a business where its output
+  contributes to revenue.
+- **You CANNOT** remove or alter the license or copyright notices.
+- **You CANNOT** relicense the code or its derivative works under a more
+  permissive license. Derivative works must remain under PolyForm
+  Noncommercial 1.0.0.
+
+This license is intentionally **not MIT**. Kovix is the product of substantial
+work and the author wants to share it for learning and contribution while
+keeping commercial exploitation exclusive. If you wish to use Kovix
+commercially — for a paid product, an internal business tool, a hosted service,
+or a training pipeline — you need a separate commercial license. Open an issue
+titled `Commercial license inquiry` to start that conversation.
+
+The above is a plain-language summary. The actual license terms are in
+[LICENSE](./LICENSE); in any conflict, the LICENSE file controls.
 
 ---
 
 ## Contributing
 
-This is pre-alpha software. PRs are welcome, but please:
+This is pre-alpha software. PRs are welcome **under the same PolyForm
+Noncommercial license as the rest of the project** — by submitting a PR you
+agree your contribution will be licensed under PolyForm Noncommercial 1.0.0
+with the same copyright attribution as the existing code. Please:
 
-1. **Read [LIMITATIONS.md](./LIMITATIONS.md) first** — it lists what's intentionally
-   missing and why. Don't open a PR for something already documented as a known
-   limitation without discussing it first.
-2. **Run the verification scripts** before submitting. At minimum:
-   `npm run verify:settings` (if you have a key configured) and `npm run typecheck`.
-3. **Don't break the staging layer.** The approval gate is the security boundary. Any
-   change that lets the agent write to disk without going through `PendingChanges` is a
-   regression.
-4. **Don't log API keys.** The settings store goes to considerable lengths to keep keys
-   out of logs and out of the renderer. Don't undo that.
-5. **Open an issue first** for anything beyond a bugfix or doc improvement. The roadmap
-   is small and intentional; large unsolicited features will likely be declined.
+1. **Read [LIMITATIONS.md](./LIMITATIONS.md) first** — it lists what's
+   intentionally missing and why. Don't open a PR for something already
+   documented as a known limitation without discussing it first.
+2. **Open an issue first** for anything beyond a bugfix or doc improvement.
+   The roadmap is small and intentional; large unsolicited features will
+   likely be declined.
+3. **Run the verification scripts** before submitting. At minimum:
+   `npm run verify:settings` (if you have a key configured) and
+   `npm run typecheck`.
+4. **Don't break the staging layer.** The approval gate is the security
+   boundary. Any change that lets the agent write to disk without going
+   through `PendingChanges` is a regression.
+5. **Don't log API keys.** The settings store goes to considerable lengths to
+   keep keys out of logs and out of the renderer. Don't undo that.
+6. **Don't add a commercial feature.** Features whose primary purpose is
+   commercial exploitation (paywalls, telemetry-for-hire, integration with
+   paid SaaS as a paid offering) will be declined. If you want a commercial
+   feature, see the **License** section above.
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contributor guide,
+[SECURITY.md](./SECURITY.md) for vulnerability reporting, and
+[CHANGELOG.md](./CHANGELOG.md) for release history.

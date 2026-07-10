@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Commercial license inquiry
+    url: https://github.com/Razisafir/kovix-standalone/issues/new?labels=commercial-inquiry&title=Commercial+license+inquiry
+    about: Want to use Kovix commercially? Open an issue with this template to start the conversation.
+  - name: Security vulnerability (private)
+    url: https://github.com/Razisafir/kovix-standalone/security/advisories/new
+    about: Found a security issue? Do NOT open a public issue — open a private security advisory instead. See SECURITY.md.
