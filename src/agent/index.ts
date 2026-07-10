@@ -3,7 +3,41 @@
  */
 
 export { AgentLoop, type AgentLoopConfig } from './agentLoop.js';
-export { CloudProvider, type CloudProviderConfig, type LLMProvider } from './llm/cloudProvider.js';
+export {
+    type CloudProviderConfig,
+} from './llm/cloudProvider.js';
+export type { LLMProvider as LLMProviderName } from './llm/cloudProvider.js';
+// Re-export the Phase 4 non-streaming LLMProvider interface + adapter. This
+// intentionally shadows the LLMProvider *type alias* from cloudProvider.ts
+// (a string union of provider names) -- per the Phase 4 spec, `LLMProvider`
+// is now the non-streaming chat interface. The cloudProvider string union is
+// re-exported above as `LLMProviderName` to preserve access for callers that
+// need the discriminator.
+export {
+    type LLMProvider,
+    type LLMMessage,
+    type LLMResponse,
+    type LLMToolCall,
+    type LLMToolSchema,
+    wrapProvider,
+    toToolSchema,
+} from './llmProviderAdapter.js';
+export {
+    MilestoneTaskRunner,
+    MilestoneStatus,
+    type Milestone,
+    type MilestoneTaskRunnerConfig,
+    type PlanReadyPayload,
+    type MilestoneStartedPayload,
+    type ToolCallPayload,
+    type ToolResultPayload,
+    type VerificationResultPayload,
+    type MilestoneVerifiedPayload,
+    type MilestoneFailedPayload,
+    type CompletePayload,
+    type ErrorPayload,
+    parsePlannedMilestones,
+} from './milestoneTaskRunner.js';
 export { OllamaProvider, type OllamaProviderConfig } from './llm/ollamaProvider.js';
 export {
     createProvider,

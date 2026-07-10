@@ -1,243 +1,155 @@
 /**
- * verify-approval-gate.ts — Kovix 2.0 Phase 3 finish line.
+ * Phase 3 verification -- Approval Gate smoke test.
  *
- * Run with:
- *   npx tsx test/verify-approval-gate.ts
+ * The existing AgentLoop uses an `approveWrite` callback (in AgentLoopConfig)
+ * to gate file writes -- the agent stages the change, the loop fires an
+ * `approval_request` event AND awaits the callback before applying the write.
  *
- * Tests the Approval Gate end-to-end via the EventEmitter interface:
- *   1. Mock LLM returns a 1-milestone plan.
- *   2. Mock LLM returns a write_file tool_call (destructive → needs approval).
- *   3. Mock LLM returns stop.
+ * This script verifies both sides of the gate:
+ *   1. REJECT path -- callback returns false -> staged change is cleared,
+ *      file is NOT written, an error string is fed back to the LLM.
+ *   2. APPROVE path -- callback returns true -> staged change is applied,
+ *      `file_written` event fires, file IS on disk.
  *
- * The script listens for 'approval_required', asserts the payload, then calls
- * approveToolCall(callId) to unblock the loop. After the loop finishes, it
- * asserts the file exists on disk with the correct content and the milestone
- * reached VERIFIED.
+ * Uses the existing MockProvider pattern (scripted AIStreamEvent batches)
+ * so no real LLM call is made.
  *
- * Output: "RESULT: PASS" or "RESULT: FAIL <reason>".
+ * Prints "RESULT: PASS" if every assertion holds.
  */
-import { promises as fs } from 'node:fs';
-import * as os from 'node:os';
+
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { AgentLoop, AGENT_EVENTS } from '../src/core/agent/AgentLoop.js';
 import type {
-  LLMMessage,
-  LLMProvider,
-  LLMResponse,
-  LLMToolCall,
-} from '../src/core/agent/types.js';
-import { ToolRegistry } from '../src/core/tools/registry.js';
-import { createCoreTools } from '../src/core/tools/core-tools.js';
-import type { ToolFunctionSchema } from '../src/core/tools/types.js';
-import { MilestoneStatus } from '../src/core/milestones/types.js';
+    IConstructAIProvider,
+    IChatMessage,
+    IToolDefinition,
+    AIStreamEvent,
+    IChatOptions,
+    IModelInfo,
+} from '../src/agent/llm/types.js';
+import { AIProviderType, ProviderStatus } from '../src/agent/llm/types.js';
+import { AgentLoop, type AgentLoopEvent } from '../src/agent/index.js';
 
-class MockLLMProvider implements LLMProvider {
-  private readonly responses: LLMResponse[];
-  private next = 0;
+let passes = 0;
+const failures: string[] = [];
+function assert(cond: boolean, label: string): void {
+    if (cond) { passes++; console.log(`  ✓ ${label}`); }
+    else { failures.push(label); console.error(`  ✗ ${label}`); }
+}
 
-  constructor(responses: LLMResponse[]) {
-    this.responses = responses;
-  }
+class MockProvider implements IConstructAIProvider {
+    readonly providerType: AIProviderType = 'cloud';
+    private queue: AIStreamEvent[][] = [];
+    callCount = 0;
 
-  async chat(
-    _messages: LLMMessage[],
-    _tools?: ToolFunctionSchema[],
-  ): Promise<LLMResponse> {
-    if (this.next >= this.responses.length) {
-      throw new Error(
-        `MockLLMProvider: no more scripted responses (call index ${this.next})`,
-      );
+    script(batches: AIStreamEvent[][]): void { this.queue = [...batches]; this.callCount = 0; }
+
+    async *chat(messages: IChatMessage[], tools: IToolDefinition[], options?: IChatOptions): AsyncIterable<AIStreamEvent> {
+        this.callCount++;
+        void messages; void tools; void options;
+        const batch = this.queue.shift();
+        if (!batch) throw new Error('MockProvider queue exhausted');
+        for (const ev of batch) yield ev;
     }
-    return this.responses[this.next++];
-  }
-}
 
-function toolCallResponse(
-  callId: string,
-  toolName: string,
-  args: Record<string, unknown>,
-): LLMResponse {
-  const call: LLMToolCall = {
-    id: callId,
-    type: 'function',
-    function: { name: toolName, arguments: JSON.stringify(args) },
-  };
-  return {
-    role: 'assistant',
-    content: null,
-    tool_calls: [call],
-    stop_reason: 'tool_use',
-  };
-}
-
-function stopResponse(text: string): LLMResponse {
-  return { role: 'assistant', content: text, stop_reason: 'stop' };
-}
-
-function planningResponse(json: string): LLMResponse {
-  return { role: 'assistant', content: json, stop_reason: 'stop' };
-}
-
-async function runVerify(): Promise<void> {
-  const workspaceRoot = await fs.mkdtemp(
-    path.join(os.tmpdir(), 'kovix-verify-gate-'),
-  );
-  console.log(`[setup] workspaceRoot = ${workspaceRoot}`);
-
-  try {
-    const registry = new ToolRegistry();
-    for (const tool of createCoreTools()) {
-      registry.registerTool(tool);
+    async listModels(): Promise<IModelInfo[]> {
+        return [{ id: 'mock', displayName: 'mock', provider: 'cloud', contextWindowTokens: 8192, supportsTools: true, supportsStreaming: true }];
     }
-    console.log(
-      `[setup] registered tools: ${registry
-        .getAllToolSchemas()
-        .map((s) => s.function.name)
-        .join(', ')}`,
-    );
+    getActiveModel(): IModelInfo | undefined {
+        return { id: 'mock', displayName: 'mock', provider: 'cloud', contextWindowTokens: 8192, supportsTools: true, supportsStreaming: true };
+    }
+    async setActiveModel(): Promise<boolean> { return true; }
+    isOffline(): boolean { return false; }
+    async checkStatus(): Promise<ProviderStatus> { return ProviderStatus.Available; }
+    dispose(): void { /* noop */ }
+}
 
-    const planJson = JSON.stringify([
-      { title: 'Write File', description: 'Write test.txt' },
-    ]);
-    const mockProvider = new MockLLMProvider([
-      planningResponse(planJson),
-      toolCallResponse('call_write_1', 'write_file', {
-        path: 'approval-test.txt',
-        content: 'gated',
-      }),
-      stopResponse('Done.'),
-    ]);
-
+async function runCase(opts: { approve: boolean; workspace: string; mock: MockProvider }): Promise<AgentLoopEvent[]> {
     const loop = new AgentLoop({
-      provider: mockProvider,
-      registry,
-      workspaceRoot,
-      maxIterations: 15,
+        aiProvider: opts.mock,
+        workspaceRoot: opts.workspace,
+        log: () => undefined,
+        approveWrite: async () => opts.approve,
     });
-
-    // ── Wire up event listeners for assertion + auto-approval ────────────
-    let approvalEventFired = false;
-    let approvalToolName = '';
-    let approvalPath = '';
-
-    loop.on(AGENT_EVENTS.plan_ready, (plan: unknown) => {
-      const milestones = plan as Array<{ title: string; status: string }>;
-      console.log(
-        `[event] plan_ready: ${milestones.length} milestone(s): ${milestones
-          .map((m) => `"${m.title}" (${m.status})`)
-          .join(', ')}`,
-      );
-    });
-
-    loop.on(AGENT_EVENTS.milestone_started, (id: string) => {
-      console.log(`[event] milestone_started: ${id}`);
-    });
-
-    loop.on(AGENT_EVENTS.tool_call, (payload: unknown) => {
-      const p = payload as { callId: string; name: string; args: unknown };
-      console.log(`[event] tool_call: ${p.name} (callId=${p.callId})`);
-    });
-
-    loop.on(AGENT_EVENTS.approval_required, (payload: unknown) => {
-      const p = payload as {
-        callId: string;
-        name: string;
-        args: { path?: string; content?: string };
-      };
-      approvalEventFired = true;
-      approvalToolName = p.name;
-      approvalPath = p.args.path ?? '';
-      console.log(
-        `[event] approval_required: tool="${p.name}" path="${approvalPath}" callId=${p.callId}`,
-      );
-
-      // Assertions on the approval payload.
-      if (p.name !== 'write_file') {
-        throw new Error(
-          `approval_required: expected tool "write_file", got "${p.name}"`,
-        );
-      }
-      if (approvalPath !== 'approval-test.txt') {
-        throw new Error(
-          `approval_required: expected path "approval-test.txt", got "${approvalPath}"`,
-        );
-      }
-
-      // Simulate the UI clicking "Approve" — unblocks the loop.
-      console.log(`[ui-sim] clicking Approve for callId=${p.callId}`);
-      loop.approveToolCall(p.callId);
-    });
-
-    loop.on(AGENT_EVENTS.tool_result, (payload: unknown) => {
-      const p = payload as {
-        callId: string;
-        result: { ok: boolean; output: string };
-      };
-      console.log(
-        `[event] tool_result: callId=${p.callId} ok=${p.result.ok} output="${p.result.output}"`,
-      );
-    });
-
-    loop.on(AGENT_EVENTS.milestone_verified, (id: string) => {
-      console.log(`[event] milestone_verified: ${id}`);
-    });
-
-    // ── Run the milestone task ───────────────────────────────────────────
-    const finalPlan = await loop.runMilestoneTask('Write a test file.');
-
-    // ── Assertions ───────────────────────────────────────────────────────
-    if (!approvalEventFired) {
-      throw new Error('approval_required event never fired');
+    const events: AgentLoopEvent[] = [];
+    for await (const ev of loop.run('write approval-test.txt')) {
+        events.push(ev);
     }
-    console.log(`[assert] approval_required event fired for write_file`);
-
-    if (approvalToolName !== 'write_file') {
-      throw new Error(
-        `approval tool was "${approvalToolName}", expected "write_file"`,
-      );
-    }
-
-    const testFilePath = path.join(workspaceRoot, 'approval-test.txt');
-    const exists = await fs
-      .access(testFilePath)
-      .then(() => true)
-      .catch(() => false);
-    if (!exists) {
-      throw new Error('approval-test.txt was not created on disk');
-    }
-    const actualContent = await fs.readFile(testFilePath, 'utf8');
-    if (actualContent !== 'gated') {
-      throw new Error(
-        `approval-test.txt content mismatch.\n  expected: "gated"\n  actual:   ${JSON.stringify(actualContent)}`,
-      );
-    }
-    console.log(`[assert] approval-test.txt exists with content "gated"`);
-
-    if (finalPlan.length !== 1) {
-      throw new Error(`expected 1 milestone, got ${finalPlan.length}`);
-    }
-    if (finalPlan[0].status !== MilestoneStatus.VERIFIED) {
-      throw new Error(
-        `milestone expected VERIFIED, got ${finalPlan[0].status}`,
-      );
-    }
-    console.log(`[assert] milestone reached VERIFIED status`);
-
-    console.log('\nRESULT: PASS');
-  } finally {
-    try {
-      await fs.rm(workspaceRoot, { recursive: true, force: true });
-      console.log(`[cleanup] removed ${workspaceRoot}`);
-    } catch (err) {
-      console.error(
-        `[cleanup] failed to remove ${workspaceRoot}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
+    return events;
 }
 
-runVerify().catch((err) => {
-  const msg = err instanceof Error ? err.message : String(err);
-  console.error('\nRESULT: FAIL ' + msg);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+    console.log('=========================================');
+    console.log(' Phase 3 Verification -- Approval Gate');
+    console.log('=========================================');
+
+    const rejectWorkspace = path.resolve(process.cwd(), 'verify-workspace-phase3-reject');
+    const approveWorkspace = path.resolve(process.cwd(), 'verify-workspace-phase3-approve');
+    await fs.mkdir(rejectWorkspace, { recursive: true });
+    await fs.mkdir(approveWorkspace, { recursive: true });
+    try {
+        await fs.rm(path.join(rejectWorkspace, 'approval-test.txt'), { force: true });
+        await fs.rm(path.join(approveWorkspace, 'approval-test.txt'), { force: true });
+    } catch { /* ignore */ }
+
+    try {
+        // --- Case 1: REJECT ---
+        console.log('\n--- Case 1: Reject path ---');
+        const rejectMock = new MockProvider();
+        rejectMock.script([
+            [
+                { type: 'tool_start', toolId: 't1', toolName: 'write_file' },
+                { type: 'tool_end', toolId: 't1', toolName: 'write_file', toolInput: { path: 'approval-test.txt', content: 'rejected' } },
+                { type: 'token', text: 'I will write the file.' },
+                { type: 'done', stopReason: 'tool_use' },
+            ],
+            [
+                { type: 'token', text: 'Acknowledged rejection.' },
+                { type: 'done', stopReason: 'stop' },
+            ],
+        ]);
+        const rejectEvents = await runCase({ approve: false, workspace: rejectWorkspace, mock: rejectMock });
+        assert(rejectEvents.some(e => e.type === 'approval_request'), 'reject: approval_request event fired');
+        assert(!rejectEvents.some(e => e.type === 'file_written'), 'reject: NO file_written event fired');
+        // File must not exist
+        let exists = false;
+        try { await fs.access(path.join(rejectWorkspace, 'approval-test.txt')); exists = true; } catch { /* not exists */ }
+        assert(!exists, 'reject: file NOT on disk');
+
+        // --- Case 2: APPROVE ---
+        console.log('\n--- Case 2: Approve path ---');
+        const approveMock = new MockProvider();
+        approveMock.script([
+            [
+                { type: 'tool_start', toolId: 't2', toolName: 'write_file' },
+                { type: 'tool_end', toolId: 't2', toolName: 'write_file', toolInput: { path: 'approval-test.txt', content: 'approved' } },
+                { type: 'token', text: 'I will write the file.' },
+                { type: 'done', stopReason: 'tool_use' },
+            ],
+            [
+                { type: 'token', text: 'Done.' },
+                { type: 'done', stopReason: 'stop' },
+            ],
+        ]);
+        const approveEvents = await runCase({ approve: true, workspace: approveWorkspace, mock: approveMock });
+        assert(approveEvents.some(e => e.type === 'approval_request'), 'approve: approval_request event fired');
+        assert(approveEvents.some(e => e.type === 'file_written' && e.filePath === 'approval-test.txt'), 'approve: file_written event fired for approval-test.txt');
+        const content = await fs.readFile(path.join(approveWorkspace, 'approval-test.txt'), 'utf8');
+        assert(content === 'approved', 'approve: file content === "approved"');
+    } finally {
+        try { await fs.rm(rejectWorkspace, { recursive: true, force: true }); } catch { /* ignore */ }
+        try { await fs.rm(approveWorkspace, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+
+    console.log('\n-----------------------------------------');
+    console.log(` Passes:   ${passes}`);
+    console.log(` Failures: ${failures.length}`);
+    console.log('-----------------------------------------');
+    if (failures.length === 0) { console.log('\nRESULT: PASS\n'); process.exit(0); }
+    else {
+        console.log('\nFailed:'); for (const f of failures) console.log(`  - ${f}`);
+        console.log('\nRESULT: FAIL\n'); process.exit(1);
+    }
+}
+
+main().catch(err => { console.error('Fatal:', err); process.exit(1); });

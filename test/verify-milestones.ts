@@ -1,241 +1,166 @@
 /**
- * verify-milestones.ts — Kovix 2.0 Phase 2 finish line.
+ * Phase 2 verification -- Milestone State Machine smoke test.
  *
- * Run with:
- *   npx tsx test/verify-milestones.ts
+ * Exercises the MilestoneTaskRunner's planning + execution loop with a mock
+ * LLMProvider that scripts a 5-call sequence covering two milestones:
+ *   Call 1 (plan):    [{title:"Setup",description:"read dir"}, {title:"Write",description:"write file"}]
+ *   Call 2 (m1 tool): list_directory tool_call
+ *   Call 3 (m1 stop): "Done m1"
+ *   Call 4 (m2 tool): write_file tool_call
+ *   Call 5 (m2 stop): "Done m2"
  *
- * Tests the two-phase Milestone execution flow end-to-end with a
- * MockLLMProvider that returns a 5-call scripted sequence:
+ * Verification gate is bypassed by having the verifier reply YES at the right
+ * moments (we use a 7-call mock: plan + (m1 tool + m1 stop + m1 verify) + (m2 tool + m2 stop + m2 verify)).
  *
- *   Call 1 (planning)      — JSON array: 2 milestones (Create Dir, Write File)
- *   Call 2 (milestone 1)   — tool_call: list_files(".")
- *   Call 3 (milestone 1)   — stop: "Done checking."
- *   Call 4 (milestone 2)   — tool_call: write_file("test-dir/test.txt", "success")
- *   Call 5 (milestone 2)   — stop: "File written."
+ * Asserts:
+ *   - 2 milestones planned
+ *   - Both milestones reach VERIFIED status
+ *   - Planning call had no tools
+ *   - File written by m2 exists on disk
  *
- * Pass criteria:
- *  - The planning call returns a 2-milestone plan.
- *  - MilestoneManager has 2 milestones after the run.
- *  - Both milestones end with status VERIFIED.
- *  - The file test-dir/test.txt exists on disk with content "success".
- *
- * Output: prints "RESULT: PASS" or "RESULT: FAIL <reason>".
+ * Prints "RESULT: PASS" if every assertion holds.
  */
-import { promises as fs } from 'node:fs';
-import * as os from 'node:os';
+
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { AgentLoop, AGENT_EVENTS } from '../src/core/agent/AgentLoop.js';
-import type {
-  LLMMessage,
-  LLMProvider,
-  LLMResponse,
-  LLMToolCall,
-} from '../src/core/agent/types.js';
-import { ToolRegistry } from '../src/core/tools/registry.js';
-import { createCoreTools } from '../src/core/tools/core-tools.js';
-import type { ToolFunctionSchema } from '../src/core/tools/types.js';
-import { MilestoneStatus } from '../src/core/milestones/types.js';
+import {
+    MilestoneTaskRunner,
+    MilestoneStatus,
+    type Milestone,
+    type LLMProvider,
+    type LLMMessage,
+    type LLMResponse,
+    type LLMToolSchema,
+    type VerificationResultPayload,
+} from '../src/agent/milestoneTaskRunner.js';
 
-/**
- * MockLLMProvider — returns a pre-scripted sequence of LLMResponse values.
- *
- * For Phase 2, the first call (planning) is made WITHOUT tools and must
- * return a raw JSON string in `content`. Subsequent calls (execution) are
- * made WITH tools and follow the Phase 1 tool_call/stop format.
- */
+let passes = 0;
+const failures: string[] = [];
+function assert(cond: boolean, label: string): void {
+    if (cond) { passes++; console.log(`  ✓ ${label}`); }
+    else { failures.push(label); console.error(`  ✗ ${label}`); }
+}
+function assertEqual<T>(actual: T, expected: T, label: string): void {
+    const ok = JSON.stringify(actual) === JSON.stringify(expected);
+    if (ok) { passes++; console.log(`  ✓ ${label}`); }
+    else {
+        failures.push(`${label} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`);
+        console.error(`  ✗ ${label}`);
+        console.error(`    expected: ${JSON.stringify(expected)}`);
+        console.error(`    actual:   ${JSON.stringify(actual)}`);
+    }
+}
+
 class MockLLMProvider implements LLMProvider {
-  private readonly responses: LLMResponse[];
-  private next = 0;
-  readonly receivedMessages: LLMMessage[][] = [];
-  readonly receivedTools: (ToolFunctionSchema[] | undefined)[] = [];
+    private queue: LLMResponse[] = [];
+    callCount = 0;
+    receivedToolsPerCall: (LLMToolSchema[] | undefined)[] = [];
 
-  constructor(responses: LLMResponse[]) {
-    this.responses = responses;
-  }
-
-  async chat(
-    messages: LLMMessage[],
-    tools?: ToolFunctionSchema[],
-  ): Promise<LLMResponse> {
-    this.receivedMessages.push(messages.map((m) => ({ ...m })));
-    this.receivedTools.push(tools);
-
-    if (this.next >= this.responses.length) {
-      throw new Error(
-        `MockLLMProvider: no more scripted responses (call index ${this.next})`,
-      );
+    script(responses: LLMResponse[]): void {
+        this.queue = [...responses];
+        this.callCount = 0;
+        this.receivedToolsPerCall = [];
     }
-    return this.responses[this.next++];
-  }
+
+    async chat(messages: LLMMessage[], tools?: LLMToolSchema[]): Promise<LLMResponse> {
+        this.callCount++;
+        this.receivedToolsPerCall.push(tools);
+        void messages;
+        const next = this.queue.shift();
+        if (!next) throw new Error(`MockLLMProvider queue exhausted on call ${this.callCount}`);
+        return next;
+    }
 }
 
-/** Build an assistant response with one tool_call. */
-function toolCallResponse(
-  callId: string,
-  toolName: string,
-  args: Record<string, unknown>,
-): LLMResponse {
-  const call: LLMToolCall = {
-    id: callId,
-    type: 'function',
-    function: {
-      name: toolName,
-      arguments: JSON.stringify(args),
-    },
-  };
-  return {
-    role: 'assistant',
-    content: null,
-    tool_calls: [call],
-    stop_reason: 'tool_use',
-  };
-}
+async function main(): Promise<void> {
+    console.log('=========================================');
+    console.log(' Phase 2 Verification -- Milestone State');
+    console.log(' Machine');
+    console.log('=========================================');
 
-/** Build an assistant response that terminates the tool loop. */
-function stopResponse(text: string): LLMResponse {
-  return {
-    role: 'assistant',
-    content: text,
-    stop_reason: 'stop',
-  };
-}
+    const workspace = path.resolve(process.cwd(), 'verify-workspace-phase2');
+    await fs.mkdir(workspace, { recursive: true });
+    try { await fs.rm(path.join(workspace, 'milestone-output.txt'), { force: true }); } catch { /* ignore */ }
 
-/** Build a planning response (no tools, raw JSON content). */
-function planningResponse(json: string): LLMResponse {
-  return {
-    role: 'assistant',
-    content: json,
-    stop_reason: 'stop',
-  };
-}
-
-async function runVerify(): Promise<void> {
-  // 1. Temp workspace.
-  const workspaceRoot = await fs.mkdtemp(
-    path.join(os.tmpdir(), 'kovix-verify-ms-'),
-  );
-  console.log(`[setup] workspaceRoot = ${workspaceRoot}`);
-
-  try {
-    // 2. Build the registry with core filesystem tools.
-    const registry = new ToolRegistry();
-    for (const tool of createCoreTools()) {
-      registry.registerTool(tool);
-    }
-    console.log(
-      `[setup] registered tools: ${registry
-        .getAllToolSchemas()
-        .map((s) => s.function.name)
-        .join(', ')}`,
-    );
-
-    // 3. Script the 5-call mock sequence.
-    const planJson = JSON.stringify([
-      { title: 'Create Dir', description: 'Make a test dir' },
-      { title: 'Write File', description: 'Write test.txt in that dir' },
-    ]);
-    const mockProvider = new MockLLMProvider([
-      // Call 1: planning response (raw JSON, no tools).
-      planningResponse(planJson),
-      // Call 2: milestone 1 — list_files.
-      toolCallResponse('call_ms1_1', 'list_files', { path: '.' }),
-      // Call 3: milestone 1 — stop.
-      stopResponse('Done checking.'),
-      // Call 4: milestone 2 — write_file (creates test-dir/ on the fly).
-      toolCallResponse('call_ms2_1', 'write_file', {
-        path: 'test-dir/test.txt',
-        content: 'success',
-      }),
-      // Call 5: milestone 2 — stop.
-      stopResponse('File written.'),
-    ]);
-
-    // 4. Construct + run the milestone task.
-    const loop = new AgentLoop({
-      provider: mockProvider,
-      registry,
-      workspaceRoot,
-      maxIterations: 15,
-    });
-
-    // Phase 3: the approval gate now blocks write_file. This Phase 2 test
-    // doesn't test the gate, so auto-approve to keep the test green.
-    loop.on(AGENT_EVENTS.approval_required, (payload: { callId: string }) => {
-      loop.approveToolCall(payload.callId);
-    });
-
-    const finalPlan = await loop.runMilestoneTask('Set up a test directory and write a file.');
-
-    // 5. Assertions.
-    // 5a. 2 milestones in the plan.
-    if (finalPlan.length !== 2) {
-      throw new Error(
-        `expected 2 milestones in final plan, got ${finalPlan.length}`,
-      );
-    }
-    console.log(`[assert] plan has 2 milestones`);
-
-    // 5b. Both VERIFIED.
-    for (const m of finalPlan) {
-      if (m.status !== MilestoneStatus.VERIFIED) {
-        throw new Error(
-          `milestone "${m.title}" expected VERIFIED but got ${m.status}`,
-        );
-      }
-    }
-    console.log(`[assert] both milestones ended VERIFIED`);
-
-    // 5c. test-dir/test.txt exists with "success".
-    const testFilePath = path.join(workspaceRoot, 'test-dir', 'test.txt');
-    const exists = await fs
-      .access(testFilePath)
-      .then(() => true)
-      .catch(() => false);
-    if (!exists) {
-      throw new Error('test-dir/test.txt was not created on disk');
-    }
-    const actualContent = await fs.readFile(testFilePath, 'utf8');
-    if (actualContent !== 'success') {
-      throw new Error(
-        `test-dir/test.txt content mismatch.\n  expected: "success"\n  actual:   ${JSON.stringify(actualContent)}`,
-      );
-    }
-    console.log(`[assert] test-dir/test.txt exists with content "success"`);
-
-    // 5d. LLM was called exactly 5 times (1 plan + 2 + 2 exec).
-    if (mockProvider.receivedMessages.length !== 5) {
-      throw new Error(
-        `expected 5 LLM calls, got ${mockProvider.receivedMessages.length}`,
-      );
-    }
-    console.log(`[assert] LLM was called exactly 5 times`);
-
-    // 5e. First call (planning) had NO tools; subsequent calls had tools.
-    if (mockProvider.receivedTools[0] !== undefined) {
-      throw new Error('planning call should have no tools, but received some');
-    }
-    for (let i = 1; i < 5; i++) {
-      if (mockProvider.receivedTools[i] === undefined) {
-        throw new Error(`execution call ${i} should have tools, but got none`);
-      }
-    }
-    console.log(`[assert] planning call had no tools; execution calls had tools`);
-
-    console.log('\nRESULT: PASS');
-  } finally {
     try {
-      await fs.rm(workspaceRoot, { recursive: true, force: true });
-      console.log(`[cleanup] removed ${workspaceRoot}`);
-    } catch (err) {
-      console.error(
-        `[cleanup] failed to remove ${workspaceRoot}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+        const mock = new MockLLMProvider();
+        mock.script([
+            // Call 1: planning -- 2 milestones
+            { role: 'assistant', content: '[{"title":"Setup","description":"List the workspace"},{"title":"Write","description":"Write milestone-output.txt with ok"}]', stop_reason: 'stop' },
+            // Call 2: m1 tool call -- list_directory
+            { role: 'assistant', content: 'Listing.', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'list_directory', arguments: JSON.stringify({ path: '.' }) } }], stop_reason: 'tool_use' },
+            // Call 3: m1 stop
+            { role: 'assistant', content: 'Done m1', stop_reason: 'stop' },
+            // Call 4: m1 verify -> YES
+            { role: 'assistant', content: 'YES', stop_reason: 'stop' },
+            // Call 5: m2 tool call -- write_file
+            { role: 'assistant', content: 'Writing.', tool_calls: [{ id: 'c2', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'milestone-output.txt', content: 'ok' }) } }], stop_reason: 'tool_use' },
+            // Call 6: m2 stop
+            { role: 'assistant', content: 'Done m2', stop_reason: 'stop' },
+            // Call 7: m2 verify -> YES
+            { role: 'assistant', content: 'YES', stop_reason: 'stop' },
+        ]);
+
+        const runner = new MilestoneTaskRunner({
+            llm: mock,
+            workspaceRoot: workspace,
+            log: () => undefined,
+        });
+
+        const events: { type: string; payload: unknown }[] = [];
+        const capture = (type: string) => (payload: unknown) => events.push({ type, payload });
+        runner.on('plan_ready', capture('plan_ready'));
+        runner.on('milestone_started', capture('milestone_started'));
+        runner.on('milestone_verified', capture('milestone_verified'));
+        runner.on('milestone_failed', capture('milestone_failed'));
+        runner.on('verification_result', capture('verification_result'));
+        runner.on('complete', capture('complete'));
+
+        const milestones: Milestone[] = await runner.runMilestoneTask('Setup workspace and write milestone-output.txt');
+
+        // Planning call had no tools
+        assertEqual(mock.receivedToolsPerCall[0], undefined, 'planning call had no tools');
+
+        // 2 milestones planned
+        assertEqual(milestones.length, 2, 'exactly 2 milestones planned');
+
+        // Both VERIFIED
+        if (milestones.length === 2) {
+            assertEqual(milestones[0]!.status, MilestoneStatus.Verified, 'milestone 0 status === VERIFIED');
+            assertEqual(milestones[1]!.status, MilestoneStatus.Verified, 'milestone 1 status === VERIFIED');
+        }
+
+        // 2 verification_result events, both passed=true
+        const vrs = events.filter(e => e.type === 'verification_result').map(e => e.payload as VerificationResultPayload);
+        assertEqual(vrs.length, 2, 'exactly 2 verification_result events');
+        if (vrs.length === 2) {
+            assertEqual(vrs[0]!.passed, true, 'm1 verification passed');
+            assertEqual(vrs[1]!.passed, true, 'm2 verification passed');
+        }
+
+        // 2 milestone_verified events, 0 milestone_failed
+        assertEqual(events.filter(e => e.type === 'milestone_verified').length, 2, '2 milestone_verified events');
+        assertEqual(events.filter(e => e.type === 'milestone_failed').length, 0, '0 milestone_failed events');
+
+        // File on disk
+        const content = await fs.readFile(path.join(workspace, 'milestone-output.txt'), 'utf8');
+        assertEqual(content, 'ok', 'milestone-output.txt content === "ok"');
+
+        // Total LLM calls = 7
+        assertEqual(mock.callCount, 7, 'exactly 7 LLM calls (plan + 3*m1 + 3*m2)');
+    } finally {
+        try { await fs.rm(workspace, { recursive: true, force: true }); } catch { /* ignore */ }
     }
-  }
+
+    console.log('\n-----------------------------------------');
+    console.log(` Passes:   ${passes}`);
+    console.log(` Failures: ${failures.length}`);
+    console.log('-----------------------------------------');
+    if (failures.length === 0) { console.log('\nRESULT: PASS\n'); process.exit(0); }
+    else {
+        console.log('\nFailed:'); for (const f of failures) console.log(`  - ${f}`);
+        console.log('\nRESULT: FAIL\n'); process.exit(1);
+    }
 }
 
-runVerify().catch((err) => {
-  const msg = err instanceof Error ? err.message : String(err);
-  console.error('\nRESULT: FAIL ' + msg);
-  process.exit(1);
-});
+main().catch(err => { console.error('Fatal:', err); process.exit(1); });
