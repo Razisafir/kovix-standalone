@@ -1,36 +1,35 @@
 /**
- * AgentLoop — the autonomous agent's main loop. Kovix 2.0 Phase 1 + Phase 2.
+ * AgentLoop — Kovix 2.0 Phase 1 + 2 + 3.
  *
- * Two entry points:
- *  - `runTask(prompt)`            [Phase 1] Plain tool-calling loop. Used when
- *                                  the caller has already decomposed the work
- *                                  and just wants the agent to execute one
- *                                  instruction.
- *  - `runMilestoneTask(prompt)`   [Phase 2] Two-phase: first asks the LLM to
- *                                  emit a JSON plan of milestones, then
- *                                  executes each milestone via the same
- *                                  tool-calling loop. Returns the final
- *                                  milestone plan with statuses.
+ * Phase 1: runTask() — plain tool-calling loop.
+ * Phase 2: runMilestoneTask() — plan → execute each milestone.
+ * Phase 3: EventEmitter + Approval Gate for destructive tools.
  *
- * Phase 2 lifecycle per milestone:
- *   PLANNED → EXECUTING → (run tool loop) → VERIFIED
- *                            ↓ (on throw)
- *                          FAILED, exception re-thrown to caller
+ * Events emitted (all are strings; payloads documented below):
+ *  - 'plan_ready'           — (plan: Milestone[]) after parsing the Lead Architect's plan.
+ *  - 'milestone_started'    — (milestoneId: string) when a milestone enters EXECUTING.
+ *  - 'milestone_verified'   — (milestoneId: string) when a milestone reaches VERIFIED.
+ *  - 'milestone_failed'     — (milestoneId: string) when a milestone reaches FAILED.
+ *  - 'llm_text'             — (text: string) when the LLM emits text content.
+ *  - 'tool_call'            — ({ callId, name, args }) before executing a tool.
+ *  - 'tool_result'          — ({ callId, result: { ok, output } }) after executing.
+ *  - 'approval_required'    — ({ callId, name, args }) when a destructive tool needs
+ *                             user approval. The loop PAUSES until approveToolCall()
+ *                             or rejectToolCall() is called for that callId.
  *
- * Design notes:
- *  - `messageHistory` persists across milestones within a single
- *    `runMilestoneTask` call. The agent sees prior milestones' results,
- *    which is the whole point of sequential execution.
- *  - The tool-calling inner loop is extracted to `runToolLoop()` so both
- *    `runTask` and `runMilestoneTask` share it.
- *  - JSON parsing of the planning response is defensive: strips markdown
- *    code fences and tries to locate a JSON array inside the text. Failure
- *    to parse throws — the caller decides whether to retry or surface.
- *  - `console.log` is used for visibility; the verify script greps these.
+ * Approval Gate:
+ *  - Tools listed in DESTRUCTIVE_TOOLS require explicit approval before execution.
+ *  - When such a tool is called, the loop emits 'approval_required' and awaits a
+ *    Promise that is resolved externally by approveToolCall() / rejectToolCall().
+ *  - approveToolCall(callId) → executes the tool, resolves with its result string.
+ *  - rejectToolCall(callId)  → resolves with "Error: User rejected this tool call."
+ *    WITHOUT executing the tool. The LLM sees this error and can adapt.
+ *  - Non-destructive tools (read_file, list_files) execute immediately, no gate.
  */
+import { EventEmitter } from 'node:events';
 import type { LLMMessage, LLMProvider, LLMResponse } from './types.js';
 import type { ToolRegistry } from '../tools/registry.js';
-import type { ToolContext } from '../tools/types.js';
+import type { ToolContext, ToolExecutionResult } from '../tools/types.js';
 import { MilestoneManager } from '../milestones/MilestoneManager.js';
 import type { Milestone, PlannedMilestone } from '../milestones/types.js';
 
@@ -42,6 +41,25 @@ const PLANNING_SYSTEM_PROMPT =
 
 const DEFAULT_MAX_ITERATIONS = 15;
 
+/**
+ * Tools that require explicit user approval before execution.
+ * Currently only `write_file` — add `delete_file`, `move_file`, etc. here
+ * as they are implemented.
+ */
+const DESTRUCTIVE_TOOLS = new Set<string>(['write_file']);
+
+/** Event names as constants — prevents typos in emit/on calls. */
+export const AGENT_EVENTS = {
+  plan_ready: 'plan_ready',
+  milestone_started: 'milestone_started',
+  milestone_verified: 'milestone_verified',
+  milestone_failed: 'milestone_failed',
+  llm_text: 'llm_text',
+  tool_call: 'tool_call',
+  tool_result: 'tool_result',
+  approval_required: 'approval_required',
+} as const;
+
 export interface AgentLoopOptions {
   provider: LLMProvider;
   registry: ToolRegistry;
@@ -52,17 +70,35 @@ export interface AgentLoopOptions {
   maxIterations?: number;
 }
 
-export class AgentLoop {
+/**
+ * Internal record for a pending approval. Stored in `pendingApprovals` until
+ * the user calls approveToolCall() or rejectToolCall().
+ */
+interface PendingApproval {
+  toolName: string;
+  argsJson: string;
+  ctx: ToolContext;
+  /** Resolves with the tool result string (either the real result or the rejection message). */
+  resolve: (result: string) => void;
+}
+
+export class AgentLoop extends EventEmitter {
   private readonly provider: LLMProvider;
   private readonly registry: ToolRegistry;
   private readonly workspaceRoot: string;
   private readonly systemPrompt: string;
   private readonly maxIterations: number;
   private readonly messageHistory: LLMMessage[] = [];
-  /** Phase 2: one manager per AgentLoop instance. Reset on each runMilestoneTask. */
   private readonly milestones = new MilestoneManager();
 
+  /**
+   * Phase 3: pending approval gates. Keyed by tool call ID.
+   * When non-empty, the tool loop is blocked waiting for user action.
+   */
+  private readonly pendingApprovals = new Map<string, PendingApproval>();
+
   constructor(opts: AgentLoopOptions) {
+    super();
     this.provider = opts.provider;
     this.registry = opts.registry;
     this.workspaceRoot = opts.workspaceRoot;
@@ -70,22 +106,60 @@ export class AgentLoop {
     this.maxIterations = opts.maxIterations ?? DEFAULT_MAX_ITERATIONS;
   }
 
-  /** Read-only view of the conversation history (for tests / debugging). */
   getHistory(): readonly LLMMessage[] {
     return this.messageHistory;
   }
 
-  /** Read-only view of the milestone plan (Phase 2). */
   getMilestonePlan(): readonly Milestone[] {
     return this.milestones.getPlan();
   }
 
+  /** Returns true if the tool requires approval before execution. */
+  requiresApproval(toolName: string): boolean {
+    return DESTRUCTIVE_TOOLS.has(toolName);
+  }
+
   /**
-   * Run the agent loop against a user prompt. Returns when the LLM emits a
-   * `stop` without tool calls, or throws when max iterations is exceeded.
-   *
-   * This is the Phase 1 entry point — kept working so existing callers
-   * don't break.
+   * Approve a pending tool call. Executes the tool and resolves the blocked
+   * Promise with the tool's result. No-op if the callId is not pending
+   * (e.g. already approved/rejected, or never required approval).
+   */
+  approveToolCall(callId: string): void {
+    const pending = this.pendingApprovals.get(callId);
+    if (!pending) {
+      console.warn(`[approval] approveToolCall: unknown callId "${callId}"`);
+      return;
+    }
+    this.pendingApprovals.delete(callId);
+    // Execute the tool asynchronously and resolve the waiting Promise.
+    void this.registry
+      .executeTool(pending.toolName, pending.argsJson, pending.ctx)
+      .then((result: ToolExecutionResult) => {
+        pending.resolve(result.output);
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        pending.resolve(`Error: tool threw during approved execution: ${msg}`);
+      });
+  }
+
+  /**
+   * Reject a pending tool call. Resolves the blocked Promise with
+   * "Error: User rejected this tool call." WITHOUT executing the tool.
+   * The LLM sees this error and can adapt its approach.
+   */
+  rejectToolCall(callId: string): void {
+    const pending = this.pendingApprovals.get(callId);
+    if (!pending) {
+      console.warn(`[approval] rejectToolCall: unknown callId "${callId}"`);
+      return;
+    }
+    this.pendingApprovals.delete(callId);
+    pending.resolve('Error: User rejected this tool call.');
+  }
+
+  /**
+   * Phase 1 entry point. Seeds history and runs the tool loop once.
    */
   async runTask(userPrompt: string): Promise<void> {
     this.messageHistory.push({ role: 'system', content: this.systemPrompt });
@@ -94,15 +168,8 @@ export class AgentLoop {
   }
 
   /**
-   * Run the agent with milestone planning. Kovix 2.0 Phase 2.
-   *
-   * Phase A (Planning): one LLM call without tools, asking for a JSON plan.
-   * Phase B (Plan load): parse the JSON, load milestones into the manager.
-   * Phase C (Execution): for each PLANNED milestone, mark EXECUTING, inject
-   *   a system message describing the milestone, run the tool loop, mark
-   *   VERIFIED. If the loop throws, mark FAILED and re-throw.
-   *
-   * Returns the final milestone plan with terminal statuses.
+   * Phase 2 + 3 entry point. Plans milestones, then executes each with
+   * the approval-gated tool loop.
    */
   async runMilestoneTask(userPrompt: string): Promise<Milestone[]> {
     // ── Phase A: Planning ────────────────────────────────────────────────
@@ -129,9 +196,9 @@ export class AgentLoop {
         .join(', ')}`,
     );
 
-    // Seed the execution-time history with the agent system prompt + the
-    // user's original prompt. Each milestone will append a system message
-    // describing its objective before running the tool loop.
+    // Emit plan_ready with the full plan (statuses all PLANNED at this point).
+    this.emit(AGENT_EVENTS.plan_ready, this.milestones.getPlan());
+
     this.messageHistory.push({ role: 'system', content: this.systemPrompt });
     this.messageHistory.push({ role: 'user', content: userPrompt });
 
@@ -143,11 +210,9 @@ export class AgentLoop {
         `\n>>>>> MILESTONE ${current.id}: ${current.title} <<<<<\n     ${current.description}`,
       );
       this.milestones.updateStatus(current.id, 'EXECUTING');
+      this.emit(AGENT_EVENTS.milestone_started, current.id);
 
       try {
-        // Inject the milestone objective as a system message. This gives
-        // the LLM clear focus for the upcoming tool-calling loop without
-        // erasing the prior conversation history.
         this.messageHistory.push({
           role: 'system',
           content: `You are now executing Milestone: ${current.title}. Objective: ${current.description}. Complete it using tools.`,
@@ -156,12 +221,12 @@ export class AgentLoop {
         await this.runToolLoop();
 
         this.milestones.updateStatus(current.id, 'VERIFIED');
+        this.emit(AGENT_EVENTS.milestone_verified, current.id);
         console.log(`[milestone] ${current.id} "${current.title}" → VERIFIED`);
       } catch (err) {
         this.milestones.updateStatus(current.id, 'FAILED');
+        this.emit(AGENT_EVENTS.milestone_failed, current.id);
         console.log(`[milestone] ${current.id} "${current.title}" → FAILED`);
-        // Re-throw so the caller knows the run failed. The plan (with the
-        // FAILED status) is still queryable via getMilestonePlan().
         throw err;
       }
 
@@ -172,10 +237,17 @@ export class AgentLoop {
   }
 
   /**
-   * Inner tool-calling loop. Shared by `runTask` and `runMilestoneTask`.
+   * Inner tool-calling loop with approval gate. Shared by runTask and runMilestoneTask.
    *
-   * Loops until the LLM emits a `stop` without tool calls, or until
-   * `maxIterations` is exceeded. Mutates `messageHistory` in place.
+   * For each tool call in an assistant response:
+   *  1. Emit 'tool_call' event.
+   *  2. If the tool is destructive (in DESTRUCTIVE_TOOLS):
+   *     a. Emit 'approval_required'.
+   *     b. Await the approval Promise (resolved by approveToolCall/rejectToolCall).
+   *     c. On reject, the result is "Error: User rejected this tool call."
+   *  3. If non-destructive, execute immediately via the registry.
+   *  4. Emit 'tool_result' event.
+   *  5. Append the tool result to message history.
    */
   private async runToolLoop(): Promise<void> {
     const toolCtx: ToolContext = { workspaceRoot: this.workspaceRoot };
@@ -188,8 +260,6 @@ export class AgentLoop {
         this.registry.getAllToolSchemas(),
       );
 
-      // Append the assistant message (with tool_calls if present) so the
-      // next call sees the prior request.
       const assistantMsg: LLMMessage = {
         role: 'assistant',
         content: response.content,
@@ -201,6 +271,7 @@ export class AgentLoop {
 
       if (response.content) {
         console.log(`[llm] ${response.content}`);
+        this.emit(AGENT_EVENTS.llm_text, response.content);
       }
 
       if (response.tool_calls && response.tool_calls.length > 0) {
@@ -208,20 +279,60 @@ export class AgentLoop {
           console.log(
             `[tool_call] ${call.function.name}(${call.function.arguments})`,
           );
-          const result = await this.registry.executeTool(
-            call.function.name,
-            call.function.arguments,
-            toolCtx,
-          );
+
+          // Parse args once for the event payload. If JSON.parse fails, pass
+          // the raw string so the UI can at least display something.
+          let parsedArgs: unknown;
+          try {
+            parsedArgs = JSON.parse(call.function.arguments);
+          } catch {
+            parsedArgs = call.function.arguments;
+          }
+
+          this.emit(AGENT_EVENTS.tool_call, {
+            callId: call.id,
+            name: call.function.name,
+            args: parsedArgs,
+          });
+
+          // Execute — with approval gate for destructive tools.
+          let resultOutput: string;
+          let resultOk: boolean;
+
+          if (this.requiresApproval(call.function.name)) {
+            resultOutput = await this.requestApproval(
+              call.id,
+              call.function.name,
+              call.function.arguments,
+              parsedArgs,
+              toolCtx,
+            );
+            // Rejection produces "Error: ..." — treat as not-ok for the event.
+            resultOk = !resultOutput.startsWith('Error:');
+          } else {
+            const result = await this.registry.executeTool(
+              call.function.name,
+              call.function.arguments,
+              toolCtx,
+            );
+            resultOutput = result.output;
+            resultOk = result.ok;
+          }
+
           const preview =
-            result.output.length > 200
-              ? result.output.slice(0, 200) + '…(truncated in log)'
-              : result.output;
-          console.log(`[tool_result] ${result.ok ? 'ok' : 'ERR'}: ${preview}`);
+            resultOutput.length > 200
+              ? resultOutput.slice(0, 200) + '…(truncated in log)'
+              : resultOutput;
+          console.log(`[tool_result] ${resultOk ? 'ok' : 'ERR'}: ${preview}`);
+
+          this.emit(AGENT_EVENTS.tool_result, {
+            callId: call.id,
+            result: { ok: resultOk, output: resultOutput },
+          });
 
           this.messageHistory.push({
             role: 'tool',
-            content: result.output,
+            content: resultOutput,
             tool_call_id: call.id,
             name: call.function.name,
           });
@@ -241,30 +352,53 @@ export class AgentLoop {
       `AgentLoop exceeded max iterations (${this.maxIterations}) without completing the task`,
     );
   }
+
+  /**
+   * Phase 3: Request user approval for a destructive tool call.
+   *
+   * Emits 'approval_required' and returns a Promise that resolves when
+   * approveToolCall() or rejectToolCall() is called for this callId.
+   * The resolved value is the tool's result string (on approve) or
+   * "Error: User rejected this tool call." (on reject).
+   */
+  private requestApproval(
+    callId: string,
+    toolName: string,
+    argsJson: string,
+    parsedArgs: unknown,
+    ctx: ToolContext,
+  ): Promise<string> {
+    return new Promise<string>((resolve) => {
+      // Store the resolver so approveToolCall/rejectToolCall can trigger it.
+      this.pendingApprovals.set(callId, {
+        toolName,
+        argsJson,
+        ctx,
+        resolve,
+      });
+
+      console.log(`[approval_required] ${toolName} (callId=${callId})`);
+      this.emit(AGENT_EVENTS.approval_required, {
+        callId,
+        name: toolName,
+        args: parsedArgs,
+      });
+    });
+  }
 }
 
 /**
  * Parse the Lead Architect's JSON plan into `PlannedMilestone[]`.
- *
- * Robustness measures:
- *  - Strip markdown code fences (```json ... ``` or ``` ... ```).
- *  - Tolerate leading/trailing prose by extracting the first `[...]` block.
- *  - Validate that each element has string `title` and `description`.
- *  - Drop invalid elements rather than failing the whole parse — partial
- *    plans are still actionable.
- *
- * @throws if no valid JSON array can be extracted.
+ * (Unchanged from Phase 2 — documented here for completeness.)
  */
 function parsePlannedMilestones(raw: string): PlannedMilestone[] {
   let text = raw.trim();
 
-  // Strip markdown code fences. Match ```json ... ``` or ``` ... ```.
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenceMatch) {
     text = fenceMatch[1].trim();
   }
 
-  // Try direct parse first.
   let parsed: unknown = null;
   try {
     parsed = JSON.parse(text);
@@ -272,7 +406,6 @@ function parsePlannedMilestones(raw: string): PlannedMilestone[] {
     // Fall through to bracket extraction.
   }
 
-  // If direct parse failed, extract the first [...] block and retry.
   if (parsed === null) {
     const bracketMatch = text.match(/\[[\s\S]*\]/);
     if (!bracketMatch) {
@@ -294,7 +427,6 @@ function parsePlannedMilestones(raw: string): PlannedMilestone[] {
     );
   }
 
-  // Validate each element. Drop invalid ones with a warning.
   const result: PlannedMilestone[] = [];
   for (let i = 0; i < parsed.length; i++) {
     const el = parsed[i];

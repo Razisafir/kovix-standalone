@@ -64,6 +64,8 @@ import {
     type MilestoneExecutionState,
 } from './sessionStore.js';
 import type { IApprovedPlan, IMilestone, ISelectablePlanStep } from '../agent/milestoneStateMachine.js';
+import { MISSION_CONTROL_HTML } from './missionControlHtml.js';
+import { setupMissionControlIpc } from './missionControlIpc.js';
 
 let mainWindow: BrowserWindow | null = null;
 let agent: AgentLoop | null = null;
@@ -185,16 +187,16 @@ function createWindow(): void {
         height,
         minWidth: 760,
         minHeight: 540,
-        backgroundColor: '#FAFAF7',
+        backgroundColor: '#09090b',
         webPreferences: {
             preload: path.join(__dirname, '..', 'preload', 'preload.cjs'),
             contextIsolation: true,
             nodeIntegration: false,
         },
-        title: 'Kovix — Build Mode',
+        title: 'Kovix — Mission Control',
     });
 
-    mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(BUILD_MODE_HTML));
+    mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(MISSION_CONTROL_HTML));
 
     // Screenshot support for headless verification. When KOVIX_SCREENSHOT is
     // set, wait for the window to finish loading, optionally run a script in
@@ -1712,6 +1714,11 @@ app.whenReady().then(async () => {
     }
 
     createWindow();
+    // Phase 3: wire Mission Control IPC (3-pane UI + approval gate).
+    setupMissionControlIpc(
+        () => mainWindow,
+        getEffectiveWorkspaceDir,
+    );
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
             createWindow();

@@ -24,7 +24,7 @@
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { AgentLoop } from '../src/core/agent/AgentLoop.js';
+import { AgentLoop, AGENT_EVENTS } from '../src/core/agent/AgentLoop.js';
 import type {
   LLMMessage,
   LLMProvider,
@@ -156,6 +156,12 @@ async function runVerify(): Promise<void> {
       registry,
       workspaceRoot,
       maxIterations: 15,
+    });
+
+    // Phase 3: the approval gate now blocks write_file. This Phase 2 test
+    // doesn't test the gate, so auto-approve to keep the test green.
+    loop.on(AGENT_EVENTS.approval_required, (payload: { callId: string }) => {
+      loop.approveToolCall(payload.callId);
     });
 
     const finalPlan = await loop.runMilestoneTask('Set up a test directory and write a file.');

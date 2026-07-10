@@ -204,4 +204,71 @@ contextBridge.exposeInMainWorld('kovixAPI', {
             ipcRenderer.removeListener('kovix:event', listener);
         });
     },
+
+    // ---- Phase 3: Mission Control (3-pane UI + approval gate) ----
+    mission: {
+        /**
+         * Start a mission: runs runMilestoneTask(prompt) in the main process.
+         * Events stream back via the on* callbacks below. Returns the final
+         * plan + ok flag when the mission completes.
+         */
+        start: (prompt: string) => ipcRenderer.invoke('kovix:mc:start', prompt),
+        /** Approve a pending destructive tool call. Unblocks the agent loop. */
+        approve: (callId: string) => ipcRenderer.invoke('kovix:mc:approve', callId),
+        /** Reject a pending destructive tool call. The LLM sees an error and adapts. */
+        reject: (callId: string) => ipcRenderer.invoke('kovix:mc:reject', callId),
+        /** Get the workspace file tree (flat list of immediate children of root). */
+        getFileTree: () => ipcRenderer.invoke('kovix:mc:file-tree'),
+        // ── Push events from main → renderer ──
+        onPlanReady: (callback: (plan: Array<{ id: string; title: string; description: string; status: string }>) => void) => {
+            const listener = (_e: unknown, data: unknown) => callback(data as Array<{ id: string; title: string; description: string; status: string }>);
+            ipcRenderer.on('kovix:mc:plan-ready', listener);
+            return () => ipcRenderer.removeListener('kovix:mc:plan-ready', listener);
+        },
+        onMilestoneStarted: (callback: (id: string) => void) => {
+            const listener = (_e: unknown, data: string) => callback(data);
+            ipcRenderer.on('kovix:mc:milestone-started', listener);
+            return () => ipcRenderer.removeListener('kovix:mc:milestone-started', listener);
+        },
+        onMilestoneVerified: (callback: (id: string) => void) => {
+            const listener = (_e: unknown, data: string) => callback(data);
+            ipcRenderer.on('kovix:mc:milestone-verified', listener);
+            return () => ipcRenderer.removeListener('kovix:mc:milestone-verified', listener);
+        },
+        onMilestoneFailed: (callback: (id: string) => void) => {
+            const listener = (_e: unknown, data: string) => callback(data);
+            ipcRenderer.on('kovix:mc:milestone-failed', listener);
+            return () => ipcRenderer.removeListener('kovix:mc:milestone-failed', listener);
+        },
+        onLLMText: (callback: (text: string) => void) => {
+            const listener = (_e: unknown, data: string) => callback(data);
+            ipcRenderer.on('kovix:mc:llm-text', listener);
+            return () => ipcRenderer.removeListener('kovix:mc:llm-text', listener);
+        },
+        onToolCall: (callback: (payload: { callId: string; name: string; args: unknown }) => void) => {
+            const listener = (_e: unknown, data: unknown) => callback(data as { callId: string; name: string; args: unknown });
+            ipcRenderer.on('kovix:mc:tool-call', listener);
+            return () => ipcRenderer.removeListener('kovix:mc:tool-call', listener);
+        },
+        onToolResult: (callback: (payload: { callId: string; result: { ok: boolean; output: string } }) => void) => {
+            const listener = (_e: unknown, data: unknown) => callback(data as { callId: string; result: { ok: boolean; output: string } });
+            ipcRenderer.on('kovix:mc:tool-result', listener);
+            return () => ipcRenderer.removeListener('kovix:mc:tool-result', listener);
+        },
+        onApprovalRequired: (callback: (payload: { callId: string; name: string; args: unknown }) => void) => {
+            const listener = (_e: unknown, data: unknown) => callback(data as { callId: string; name: string; args: unknown });
+            ipcRenderer.on('kovix:mc:approval-required', listener);
+            return () => ipcRenderer.removeListener('kovix:mc:approval-required', listener);
+        },
+        onFileTree: (callback: (entries: string[]) => void) => {
+            const listener = (_e: unknown, data: string[]) => callback(data);
+            ipcRenderer.on('kovix:mc:file-tree', listener);
+            return () => ipcRenderer.removeListener('kovix:mc:file-tree', listener);
+        },
+        onComplete: (callback: (result: { ok: boolean; error?: string; plan?: unknown[] }) => void) => {
+            const listener = (_e: unknown, data: unknown) => callback(data as { ok: boolean; error?: string; plan?: unknown[] });
+            ipcRenderer.on('kovix:mc:complete', listener);
+            return () => ipcRenderer.removeListener('kovix:mc:complete', listener);
+        },
+    },
 });
