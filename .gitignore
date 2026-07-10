@@ -14,3 +14,4 @@ test-staging-workspace/
 kovix-settings*.json
 *.kovix-settings.json
 settings.local.json
+release/

@@ -1,0 +1,79 @@
+name: Release
+
+# Builds installable Kovix binaries for macOS, Windows, and Linux whenever a
+# v* tag is pushed, OR when manually triggered with a tag name. Uploads the
+# resulting installers to the matching GitHub Release as downloadable assets.
+#
+# Trigger this workflow for an existing tag via the Actions UI, or via:
+#   POST /repos/{owner}/{repo}/actions/workflows/release.yml/dispatches
+#   { "ref": "main", "inputs": { "tag": "v1.0.0" } }
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and publish (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write   # required by electron-builder to upload assets to the Release
+
+jobs:
+  build:
+    name: Build ${{ matrix.os_name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false   # if one OS fails, the others still complete
+      matrix:
+        include:
+          - os: ubuntu-latest
+            os_name: Linux
+            target: linux
+            artifact_glob: release/Kovix-*.AppImage release/Kovix-*.deb release/Kovix-*.tar.gz
+          - os: macos-latest
+            os_name: macOS
+            target: mac
+            artifact_glob: release/Kovix-*.dmg release/Kovix-*-mac.zip
+          - os: windows-latest
+            os_name: Windows
+            target: win
+            artifact_glob: release/Kovix-*.exe release/Kovix-*.7z
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build app bundles (esbuild)
+        run: npm run build:bundle
+
+      - name: Build installers (electron-builder)
+        run: npx electron-builder --${{ matrix.target }} --publish always
+        env:
+          # GitHub token provided automatically by Actions; electron-builder
+          # uses it to upload the binaries to the matching Release.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts (workflow artifacts UI)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kovix-${{ matrix.os_name }}-artifacts
+          path: ${{ matrix.artifact_glob }}
+          if-no-files-found: warn
+          retention-days: 30
