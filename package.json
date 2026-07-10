@@ -9,6 +9,18 @@
     "node": ">=20.0.0"
   },
   "main": "dist/main/main.cjs",
+  "author": {
+    "name": "Razisafir",
+    "url": "https://github.com/Razisafir"
+  },
+  "homepage": "https://github.com/Razisafir/kovix-standalone",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Razisafir/kovix-standalone.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Razisafir/kovix-standalone/issues"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:bundle": "esbuild src/main/main.ts --bundle --platform=node --format=cjs --outfile=dist/main/main.cjs --external:electron && esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --outfile=dist/preload/preload.cjs --external:electron",
@@ -18,14 +30,81 @@
     "verify:e2e": "tsx test/verify-end-to-end.ts",
     "verify:hello": "tsx test/verify.ts --task \"create a file called hello.txt with the text 'test' in it\"",
     "start": "npm run build:bundle && electron .",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dist": "npm run build:bundle && electron-builder",
+    "dist:linux": "npm run build:bundle && electron-builder --linux",
+    "dist:win": "npm run build:bundle && electron-builder --win",
+    "dist:mac": "npm run build:bundle && electron-builder --mac",
+    "dist:publish": "npm run build:bundle && electron-builder --publish always"
   },
   "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "esbuild": "^0.24.0",
     "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
+  },
+  "build": {
+    "appId": "com.razisafir.kovix",
+    "productName": "Kovix",
+    "copyright": "Copyright © 2025 Razisafir — PolyForm Noncommercial 1.0.0",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "Razisafir",
+      "repo": "kovix-standalone"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Kovix"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "tar.gz"
+      ],
+      "category": "Development",
+      "maintainer": "Razisafir <https://github.com/Razisafir>",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6"
+      ]
+    }
   }
 }
