@@ -376,7 +376,23 @@ export class RefinementService {
                         // If not, we'll return the collected text as a question.
                         break;
                     case 'error':
-                        throw new Error(`LLM stream error: ${event.text}`);
+                        // MVP FIX: previously this threw, which escaped the retry
+                        // loop and became an unhandled IPC rejection. The user
+                        // would see a generic error dialog instead of a useful
+                        // message in the chat. Now we return a question with the
+                        // actual error text so the user knows what went wrong
+                        // (rate limit, auth, network, etc.) and can act on it.
+                        //
+                        // Common error texts from cloudProvider.ts:
+                        //   - "Rate limited." (429 after retries)
+                        //   - "Server error (500)."  (5xx after retries)
+                        //   - "API key is invalid." (401)
+                        //   - "Network error: ..." (fetch failed)
+                        this._log(`[refine] LLM stream error: ${event.text}`);
+                        return {
+                            kind: 'question',
+                            text: `[OpenRouter Error]: ${event.text || 'Rate limited or empty response.'} Please try again or select a different model.`,
+                        };
                 }
             }
 
@@ -416,7 +432,7 @@ export class RefinementService {
                 this._log(`[refine] WARNING: LLM returned empty response with no tool call. Rounds=${completedRounds}`);
                 return {
                     kind: 'question',
-                    text: "I didn't get a clear response. Could you tell me more about what you're trying to build?",
+                    text: '[OpenRouter Error]: Rate limited or empty response. Please try again or select a different model.',
                 };
             }
             return { kind: 'question', text: trimmed };
@@ -435,7 +451,7 @@ export class RefinementService {
         // Shouldn't reach here, but be defensive.
         return {
             kind: 'question',
-            text: "I'm having trouble refining this. Could you give me more detail about what you want to build?",
+            text: '[OpenRouter Error]: Rate limited or empty response. Please try again or select a different model.',
         };
     }
 }

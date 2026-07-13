@@ -83,9 +83,18 @@ contextBridge.exposeInMainWorld('kovixAPI', {
         clearApiKey: () => ipcRenderer.invoke('kovix:settings:clear-key'),
         /**
          * Get the list of suggested model IDs for a provider. Used to
-         * populate the model picker dropdown.
+         * populate the model picker dropdown. For OpenRouter this returns
+         * the LIVE catalog of free models (pricing.prompt="0" AND
+         * pricing.completion="0"), merged with a curated fallback list,
+         * cached for 1 hour.
          */
         getModelsForProvider: (provider: string) => ipcRenderer.invoke('kovix:settings:get-models', provider),
+        /**
+         * Force-refresh the model catalog for a provider (bypass cache).
+         * Currently only OpenRouter supports live refresh — other providers
+         * return their static list. Returns the refreshed list.
+         */
+        refreshModelsForProvider: (provider: string) => ipcRenderer.invoke('kovix:settings:refresh-models', provider),
     },
 
     // ---- Workspace directory (where build files land) ----

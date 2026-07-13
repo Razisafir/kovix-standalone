@@ -121,10 +121,15 @@ function parseMarkdownCodeBlocks(text: string, roundIndex: number): MarkdownCode
 
 /** Infer a file path from the code block's language and content. */
 function inferFilePath(language: string, content: string, roundIndex: number, blockIdx: number): string {
-    // Check first 5 lines for a path comment: // path: src/app.js  or  # path: src/app.py  or  <!-- path: index.html -->
+    // Check first 5 lines for a path comment. Supports:
+    //   // path: src/app.js      (JS/TS/C/Java/Go/Rust line comment)
+    //   # path: src/app.py       (Python/Ruby/Shell line comment)
+    //   <!-- path: index.html --> (HTML/XML comment)
+    //   /* path: styles.css */    (CSS/JS/TS block comment — opening line)
+    //   * path: styles.css        (CSS/JS/TS block comment — middle line)
     const lines = content.split('\n').slice(0, 5);
     for (const line of lines) {
-        const pathMatch = line.match(/(?:\/\/|#|<!--)\s*(?:path|file|filename)\s*[:=]\s*([^\s*<]+)/i);
+        const pathMatch = line.match(/(?:\/\/|#|<!--|\/\*|\*)\s*(?:path|file|filename)\s*[:=]\s*([^\s*<]+)/i);
         if (pathMatch && pathMatch[1]) {
             return pathMatch[1].replace(/^\.\//, '').replace(/["']/g, '');
         }

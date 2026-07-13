@@ -33,6 +33,74 @@ import * as path from 'node:path';
 import type { ProviderName } from '../agent/llm/providerFactory.js';
 
 // ----------------------------------------------------------------------
+// OpenRouter free-models fetcher
+// ----------------------------------------------------------------------
+//
+// OpenRouter exposes a PUBLIC catalog at https://openrouter.ai/api/v1/models
+// (no auth required for GET). Each model object includes a `pricing` object
+// with string-valued fields like `pricing.prompt = "0"` and
+// `pricing.completion = "0"` for free-tier models.
+//
+// We fetch the catalog, filter to models where BOTH prompt and completion
+// pricing are exactly "0", cache the result for 1 hour, and surface it in
+// the Settings picker so the user can pick from every free model
+// OpenRouter currently offers — without having to type IDs manually.
+//
+// If the network call fails (offline, OpenRouter down, malformed response),
+// we fall back to FREE_OPENROUTER_MODELS_FALLBACK below, a curated snapshot
+// of popular free models as of late 2025.
+
+/** Curated snapshot of popular OpenRouter free-tier models.
+ *  Used as a fallback when the live catalog fetch fails. */
+export const FREE_OPENROUTER_MODELS_FALLBACK: readonly string[] = [
+    'openai/gpt-oss-120b:free',
+    'openai/gpt-oss-20b:free',
+    'deepseek/deepseek-r1:free',
+    'deepseek/deepseek-r1-0528:free',
+    'deepseek/deepseek-chat:free',
+    'deepseek/deepseek-chat-v3-0324:free',
+    'qwen/qwq-32b:free',
+    'qwen/qwen-2.5-72b-instruct:free',
+    'qwen/qwen-2.5-coder-32b-instruct:free',
+    'qwen/qwen-2.5-7b-instruct:free',
+    'meta-llama/llama-3.3-70b-instruct:free',
+    'google/gemini-2.0-flash-exp:free',
+    'google/gemini-flash-1.5:free',
+    'google/gemma-3-12b-it:free',
+    'google/gemma-3-4b-it:free',
+    'google/gemma-2-9b-it:free',
+    'nvidia/nemotron-3-super-120b-a12b:free',
+    'nvidia/nemotron-4-340b-instruct:free',
+    'mistralai/mistral-small-3.1-24b-instruct:free',
+    'mistralai/mistral-nemo:free',
+    'mistralai/mistral-7b-instruct:free',
+    'microsoft/phi-4-reasoning-plus:free',
+    'microsoft/phi-4:free',
+    'microsoft/phi-3-medium-128k-instruct:free',
+    'microsoft/phi-3-mini-128k-instruct:free',
+    'nousresearch/hermes-3-llama-3.1-405b:free',
+    'cognitivecomputations/dolphin3.0-mistral-24b:free',
+    'moonshotai/kimi-k2:free',
+    'moonshotai/kimi-dev-72b:free',
+    'thudm/glm-4-32b:free',
+    'thudm/glm-z1-32b:free',
+    'liquid/lfm-40b:free',
+    'liquid/lfm-7b:free',
+    'liquid/lfm-3b:free',
+    'rekaai/reka-flash-3:free',
+    'perplexity/r1-1776:free',
+    'tngtech/deepseek-r1t-chimera:free',
+    'featherless/qwerky-72b:free',
+    'bytedance-research/ui-tars-72b:free',
+    'open-r1/olympiccoder-32b:free',
+    'open-r1/olympiccoder-7b:free',
+    'huggingfaceh4/zephyr-7b-beta:free',
+    'openchat/openchat-7b:free',
+    'gryphe/mythomist-7b:free',
+    'undi95/toppy-m-7b:free',
+];
+
+// ----------------------------------------------------------------------
 // Types
 // ----------------------------------------------------------------------
 
@@ -288,6 +356,11 @@ export async function resolveProviderConfig(): Promise<ResolvedProviderConfig | 
  * selecting a model. For Anthropic we list the user-specified production
  * defaults; for other providers we use the same defaults from the
  * Phase 0 / Task 9 factory.
+ *
+ * For OpenRouter we seed with the most popular free models — but at runtime
+ * `kovix:settings:get-models` IPC handler merges this with the live catalog
+ * returned by `fetchOpenRouterFreeModels()`, so the user always sees every
+ * free model OpenRouter currently offers.
  */
 export const PROVIDER_MODELS: Partial<Record<ProviderName, string[]>> = {
     anthropic: [
@@ -295,7 +368,7 @@ export const PROVIDER_MODELS: Partial<Record<ProviderName, string[]>> = {
         'claude-opus-4-8',
         'claude-haiku-4-5-20251001',
     ],
-    openrouter: ['openai/gpt-oss-20b:free', 'nvidia/nemotron-3-super-120b-a12b:free'],
+    openrouter: Array.from(FREE_OPENROUTER_MODELS_FALLBACK),
     nvidia: ['meta/llama-3.3-70b-instruct'],
     openai: ['gpt-4o', 'gpt-4o-mini'],
     together: ['meta-llama/Llama-3.3-70B-Instruct-Turbo'],
@@ -316,4 +389,114 @@ export const PROVIDER_MODELS: Partial<Record<ProviderName, string[]>> = {
  */
 export function defaultModelFor(provider: ProviderName): string | undefined {
     return PROVIDER_MODELS[provider]?.[0];
+}
+
+// ----------------------------------------------------------------------
+// Live OpenRouter free-models fetcher (1-hour cache, static fallback)
+// ----------------------------------------------------------------------
+
+const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+const OPENROUTER_MODELS_TTL_MS = 60 * 60 * 1000; // 1 hour
+const OPENROUTER_FETCH_TIMEOUT_MS = 10_000;
+
+/** Subset of the OpenRouter /models response shape that we care about. */
+interface OpenRouterModelEntry {
+    id: string;
+    pricing?: {
+        prompt?: string;
+        completion?: string;
+    };
+}
+interface OpenRouterModelsResponse {
+    data?: OpenRouterModelEntry[];
+}
+
+let openRouterFreeCache: { ids: string[]; fetchedAt: number } | null = null;
+let openRouterFetchInFlight: Promise<string[]> | null = null;
+
+/**
+ * Returns the list of free OpenRouter model IDs.
+ *
+ * A model is "free" when BOTH `pricing.prompt === "0"` AND
+ * `pricing.completion === "0"` (OpenRouter's convention for $0-priced
+ * models). The result is fetched live from
+ * https://openrouter.ai/api/v1/models, cached for 1 hour, and merged
+ * with the curated `FREE_OPENROUTER_MODELS_FALLBACK` list. Concurrent
+ * callers share the same in-flight promise.
+ *
+ * @param forceRefresh — bypass the cache (e.g. user clicked "Refresh"
+ *   in the Settings modal). Default false.
+ */
+export async function fetchOpenRouterFreeModels(forceRefresh = false): Promise<string[]> {
+    const now = Date.now();
+    if (!forceRefresh && openRouterFreeCache && (now - openRouterFreeCache.fetchedAt) < OPENROUTER_MODELS_TTL_MS) {
+        return openRouterFreeCache.ids;
+    }
+
+    // Deduplicate concurrent callers — they all wait on the same in-flight fetch.
+    if (openRouterFetchInFlight) {
+        try {
+            return await openRouterFetchInFlight;
+        } catch {
+            // If the in-flight fetch rejected, fall through and try again.
+        }
+    }
+
+    openRouterFetchInFlight = (async (): Promise<string[]> => {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), OPENROUTER_FETCH_TIMEOUT_MS);
+            try {
+                const res = await fetch(OPENROUTER_MODELS_URL, {
+                    signal: controller.signal,
+                    headers: { 'accept': 'application/json' },
+                });
+                if (!res.ok) {
+                    throw new Error('OpenRouter /models returned HTTP ' + res.status);
+                }
+                const json = (await res.json()) as OpenRouterModelsResponse;
+                const entries = Array.isArray(json?.data) ? json.data : [];
+                // Filter: pricing.prompt === "0" AND pricing.completion === "0".
+                // OpenRouter uses string-valued numeric fields; "0" means free.
+                const freeIds: string[] = [];
+                for (const entry of entries) {
+                    if (!entry || typeof entry.id !== 'string' || entry.id.length === 0) continue;
+                    const p = entry.pricing;
+                    if (!p) continue;
+                    if (p.prompt === '0' && p.completion === '0') {
+                        freeIds.push(entry.id);
+                    }
+                }
+                if (freeIds.length === 0) {
+                    throw new Error('OpenRouter /models returned no free models (pricing.prompt=0 AND pricing.completion=0)');
+                }
+                // Merge live + fallback, dedup, sort alphabetically for stable UI.
+                const merged = Array.from(new Set([...freeIds, ...FREE_OPENROUTER_MODELS_FALLBACK])).sort();
+                openRouterFreeCache = { ids: merged, fetchedAt: now };
+                return merged;
+            } finally {
+                clearTimeout(timeout);
+            }
+        } catch (err) {
+            console.warn('[settings] Failed to fetch OpenRouter free models catalog — using fallback list. Reason:', err instanceof Error ? err.message : String(err));
+            // Cache the fallback for the full TTL window so we don't hammer
+            // OpenRouter on every UI interaction when the network is down.
+            const merged = Array.from(new Set(FREE_OPENROUTER_MODELS_FALLBACK)).sort();
+            openRouterFreeCache = { ids: merged, fetchedAt: now };
+            return merged;
+        } finally {
+            openRouterFetchInFlight = null;
+        }
+    })();
+
+    return openRouterFetchInFlight;
+}
+
+/** Synchronous accessor — returns the cached list if available, else the
+ *  static fallback. For code paths that can't await. */
+export function getCachedOpenRouterFreeModels(): string[] {
+    if (openRouterFreeCache) {
+        return openRouterFreeCache.ids;
+    }
+    return Array.from(FREE_OPENROUTER_MODELS_FALLBACK);
 }

@@ -50,6 +50,7 @@ import {
     getSettingsPreview,
     resolveProviderConfig,
     PROVIDER_MODELS,
+    fetchOpenRouterFreeModels,
     type PersistedSettings,
     type SettingsPreview,
 } from './settingsStore.js';
@@ -273,7 +274,34 @@ ipcMain.handle('kovix:settings:get-preview', async (): Promise<SettingsPreview> 
 });
 
 ipcMain.handle('kovix:settings:get-models', async (_event, providerName: string): Promise<string[]> => {
-    return PROVIDER_MODELS[providerName as ProviderName] ?? [];
+    const provider = providerName as ProviderName;
+    // OpenRouter: return the LIVE catalog of free models (merged with the
+    // static fallback) so the Settings picker shows every free model
+    // OpenRouter currently offers — not just the two we hardcoded in v1.
+    // Cached 1 hour; falls back to the static list on network failure.
+    if (provider === 'openrouter') {
+        try {
+            return await fetchOpenRouterFreeModels();
+        } catch {
+            return PROVIDER_MODELS[provider] ?? [];
+        }
+    }
+    return PROVIDER_MODELS[provider] ?? [];
+});
+
+// Force-refresh the model catalog for a provider (bypass cache). Currently
+// only OpenRouter supports live refresh — other providers return their
+// static list. Used by the "Refresh" button next to the model picker.
+ipcMain.handle('kovix:settings:refresh-models', async (_event, providerName: string): Promise<string[]> => {
+    const provider = providerName as ProviderName;
+    if (provider === 'openrouter') {
+        try {
+            return await fetchOpenRouterFreeModels(true /* forceRefresh */);
+        } catch {
+            return PROVIDER_MODELS[provider] ?? [];
+        }
+    }
+    return PROVIDER_MODELS[provider] ?? [];
 });
 
 ipcMain.handle('kovix:settings:test', async (_event, config: TestConnectionInput): Promise<TestConnectionResult> => {
@@ -585,19 +613,36 @@ ipcMain.handle('kovix:refine:start', async (_event, ideaText: string): Promise<R
         return fakeQuestion;
     }
 
-    const service = await getRefinementService();
-    const result = await service.refine({
-        ideaText: session.ideaText,
-        priorTurns: session.priorTurns,
-    });
-    if (result.kind === 'question') {
-        session.priorTurns.push({ role: 'assistant', content: result.text });
-    } else {
-        // Spec emitted — store it and advance stage.
-        session.spec = result.spec;
-        session.stage = 'spec';
+    try {
+        const service = await getRefinementService();
+        const result = await service.refine({
+            ideaText: session.ideaText,
+            priorTurns: session.priorTurns,
+        });
+        if (result.kind === 'question') {
+            session.priorTurns.push({ role: 'assistant', content: result.text });
+        } else {
+            // Spec emitted — store it and advance stage.
+            session.spec = result.spec;
+            session.stage = 'spec';
+        }
+        return result;
+    } catch (err) {
+        // MVP FIX: previously any thrown error (429 after retries, 5xx,
+        // 401, network failure) became an unhandled IPC rejection — the
+        // user saw a generic error dialog instead of a useful message in
+        // the chat. Now we catch and return a question with the actual
+        // error text so the user knows what went wrong and can act on it
+        // (retry, switch model, fix API key, etc.).
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[refine:start] LLM error:', msg);
+        const errorQuestion: RefinementResult = {
+            kind: 'question',
+            text: `[OpenRouter Error]: ${msg || 'Rate limited or empty response.'} Please try again or select a different model.`,
+        };
+        session.priorTurns.push({ role: 'assistant', content: errorQuestion.text });
+        return errorQuestion;
     }
-    return result;
 });
 
 ipcMain.handle('kovix:refine:continue', async (_event, answer: string): Promise<RefinementResult> => {
@@ -624,19 +669,31 @@ ipcMain.handle('kovix:refine:continue', async (_event, answer: string): Promise<
         return DEMO_SPEC;
     }
 
-    const service = await getRefinementService();
-    const result = await service.refine({
-        ideaText: session.ideaText,
-        priorTurns: session.priorTurns,
-    });
-    if (result.kind === 'question') {
-        session.priorTurns.push({ role: 'assistant', content: result.text });
-    } else {
-        // Spec emitted — store it and advance stage.
-        session.spec = result.spec;
-        session.stage = 'spec';
+    try {
+        const service = await getRefinementService();
+        const result = await service.refine({
+            ideaText: session.ideaText,
+            priorTurns: session.priorTurns,
+        });
+        if (result.kind === 'question') {
+            session.priorTurns.push({ role: 'assistant', content: result.text });
+        } else {
+            // Spec emitted — store it and advance stage.
+            session.spec = result.spec;
+            session.stage = 'spec';
+        }
+        return result;
+    } catch (err) {
+        // MVP FIX: see comment in kovix:refine:start above.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[refine:continue] LLM error:', msg);
+        const errorQuestion: RefinementResult = {
+            kind: 'question',
+            text: `[OpenRouter Error]: ${msg || 'Rate limited or empty response.'} Please try again or select a different model.`,
+        };
+        session.priorTurns.push({ role: 'assistant', content: errorQuestion.text });
+        return errorQuestion;
     }
-    return result;
 });
 
 // ----------------------------------------------------------------------
@@ -4213,9 +4270,12 @@ const BUILD_MODE_HTML = `<!doctype html>
 
       <div class="field">
         <label class="field-label" for="set-model">Model</label>
-        <input class="field-input" id="set-model" type="text" placeholder="(provider default)" list="set-model-list" autocomplete="off" spellcheck="false" />
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input class="field-input" id="set-model" type="text" placeholder="(provider default)" list="set-model-list" autocomplete="off" spellcheck="false" style="flex:1;" />
+          <button class="reveal-btn" id="set-model-refresh" type="button" title="Refresh the model list from the provider's live catalog (OpenRouter only)" style="display:none;">Refresh</button>
+        </div>
         <datalist id="set-model-list"></datalist>
-        <div class="field-hint">Pick from the list or type a custom model ID. Leave blank for the provider default.</div>
+        <div class="field-hint" id="set-model-hint">Pick from the list or type a custom model ID. Leave blank for the provider default.</div>
       </div>
 
       <div class="field hidden" id="set-baseurl-field">
@@ -4320,6 +4380,8 @@ const BUILD_MODE_HTML = `<!doctype html>
     setApikeyHint: document.getElementById('set-apikey-hint'),
     setModel: document.getElementById('set-model'),
     setModelList: document.getElementById('set-model-list'),
+    setModelRefresh: document.getElementById('set-model-refresh') as HTMLButtonElement | null,
+    setModelHint: document.getElementById('set-model-hint'),
     setBaseurlField: document.getElementById('set-baseurl-field'),
     setBaseurl: document.getElementById('set-baseurl'),
     setTestResult: document.getElementById('set-test-result'),
@@ -5457,6 +5519,20 @@ const BUILD_MODE_HTML = `<!doctype html>
     };
     els.setProviderHint.textContent = hints[providerName] || '';
 
+    // Show the Refresh button only for providers that support live model
+    // catalog refresh (currently just OpenRouter). Hidden for all others.
+    if (els.setModelRefresh) {
+      els.setModelRefresh.style.display = (providerName === 'openrouter') ? '' : 'none';
+    }
+    // Update the per-provider model hint.
+    if (els.setModelHint) {
+      if (providerName === 'openrouter') {
+        els.setModelHint.textContent = 'Pick a free model from the list or type a custom ID. Click Refresh to fetch the latest catalog from OpenRouter.';
+      } else {
+        els.setModelHint.textContent = 'Pick from the list or type a custom model ID. Leave blank for the provider default.';
+      }
+    }
+
     // Populate model datalist
     const models = await kovixAPI.settings.getModelsForProvider(providerName);
     els.setModelList.innerHTML = '';
@@ -5500,6 +5576,39 @@ const BUILD_MODE_HTML = `<!doctype html>
   els.settingsClose.addEventListener('click', closeSettings);
   els.setCancel.addEventListener('click', closeSettings);
   els.setProvider.addEventListener('change', updateProviderSpecificUI);
+
+  // "Refresh" button next to the model picker — re-fetches the live model
+  // catalog from the provider (currently OpenRouter only) bypassing the
+  // 1-hour cache. Repopulates the <datalist> with the fresh list.
+  if (els.setModelRefresh) {
+    els.setModelRefresh.addEventListener('click', async () => {
+      const providerName = els.setProvider.value;
+      if (providerName !== 'openrouter') return;
+      const btn = els.setModelRefresh as HTMLButtonElement;
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Refreshing…';
+      try {
+        const refreshed = await kovixAPI.settings.refreshModelsForProvider(providerName);
+        els.setModelList.innerHTML = '';
+        for (const m of refreshed) {
+          const opt = document.createElement('option');
+          opt.value = m;
+          els.setModelList.appendChild(opt);
+        }
+        if (els.setModelHint) {
+          els.setModelHint.textContent = '✓ Loaded ' + refreshed.length + ' free models from OpenRouter.';
+        }
+      } catch (err) {
+        if (els.setModelHint) {
+          els.setModelHint.textContent = 'Failed to refresh: ' + (err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
+  }
 
   els.setApikeyReveal.addEventListener('click', () => {
     const isPassword = els.setApikey.type === 'password';

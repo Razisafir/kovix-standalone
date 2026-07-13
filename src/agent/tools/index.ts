@@ -56,7 +56,7 @@ export const TOOL_DEFINITIONS: IToolDefinition[] = [
     },
     {
         name: 'write_file',
-        description: "Write content to a file. Creates the file and parent directories if they don't exist. The write is STAGED — it will not hit disk until the user approves it in the diff review.",
+        description: "Write content to a file. Creates the file and parent directories if they don't exist. The file is written to disk immediately under the workspace root. Use a path relative to the workspace root (e.g. 'src/app.js' or 'index.html').",
         inputSchema: {
             type: 'object',
             properties: {
@@ -90,7 +90,7 @@ export const TOOL_DEFINITIONS: IToolDefinition[] = [
     },
     {
         name: 'edit_file',
-        description: 'Apply an edit to an existing file. Pass the FULL new content of the file (not a diff). The edit is STAGED — it will not hit disk until the user approves it in the diff review.',
+        description: 'Apply an edit to an existing file. Pass the FULL new content of the file (not a diff). The file is written to disk immediately under the workspace root.',
         inputSchema: {
             type: 'object',
             properties: {
