@@ -504,6 +504,8 @@ export class CloudProvider implements IConstructAIProvider {
                 let currentToolName: string | null = null;
                 let currentToolArgs = '';
 
+                let openaiDoneEmitted = false;
+                let openaiHadToolCalls = false;
                 try {
                     while (true) {
                         const { done, value } = await reader.read();
@@ -518,6 +520,7 @@ export class CloudProvider implements IConstructAIProvider {
                             const jsonStr = trimmed.slice(6);
                             if (jsonStr === '[DONE]') {
                                 yield { type: 'done', stopReason: 'stop' };
+                                openaiDoneEmitted = true;
                                 continue;
                             }
                             let chunk: {
@@ -550,6 +553,7 @@ export class CloudProvider implements IConstructAIProvider {
                                         currentToolId = tc.id;
                                         currentToolName = tc.function.name;
                                         currentToolArgs = tc.function.arguments ?? '';
+                                        openaiHadToolCalls = true;
                                         yield {
                                             type: 'tool_start',
                                             toolId: currentToolId,
@@ -578,14 +582,33 @@ export class CloudProvider implements IConstructAIProvider {
                                     toolName: currentToolName,
                                     toolInput: parsedInput,
                                 };
+                                // MVP FIX: yield done immediately after tool_calls
+                                // finish_reason. Without this, the agent loop never
+                                // sees a done event and loops forever (the hang).
+                                yield { type: 'done', stopReason: 'tool_calls' };
+                                openaiDoneEmitted = true;
                                 currentToolId = null;
                                 currentToolName = null;
                                 currentToolArgs = '';
                             }
-                            if (choice.finish_reason === 'stop') {
-                                yield { type: 'done', stopReason: 'stop' };
+                            if (choice.finish_reason === 'stop' ||
+                                choice.finish_reason === 'length' ||
+                                choice.finish_reason === 'content_filter') {
+                                // MVP FIX: yield done for ALL terminal finish reasons.
+                                // Previously only 'stop' yielded done — 'length' and
+                                // 'content_filter' left the stream without a done
+                                // event, causing the agent loop to hang.
+                                yield { type: 'done', stopReason: choice.finish_reason === 'stop' ? 'stop' : choice.finish_reason };
+                                openaiDoneEmitted = true;
                             }
                         }
+                    }
+                    // MVP FIX: safety net — if the stream ended without yielding a
+                    // done event (common with free OpenRouter models that don't send
+                    // [DONE] or a finish_reason), synthesize one. Without this, the
+                    // agent loop's exit condition never triggers and it hangs.
+                    if (!openaiDoneEmitted) {
+                        yield { type: 'done', stopReason: openaiHadToolCalls ? 'tool_calls' : 'stop' };
                     }
                 } finally {
                     reader.releaseLock();

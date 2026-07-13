@@ -63,9 +63,90 @@ import { PendingChanges } from './staging/pendingChanges.js';
 import { TerminalRateLimiter } from './security/index.js';
 import { principlesBlock } from './agentPrinciples.js';
 
-const MAX_ROUNDS = 50;
+// MVP FIX: reduced from 50 to 10. With free OpenRouter models that
+// can't do tool calling, each round is a full LLM call (up to 60s).
+// 50 rounds × 60s = 50 minutes of hanging. 10 rounds × 60s = 10 min
+// worst case, and the markdown fallback parser should produce files
+// within 2-3 rounds.
+const MAX_ROUNDS = 10;
 
 const PLANNING_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_codebase', 'web_search']);
+
+// MVP FIX: markdown code-block fallback parser.
+// When a free OpenRouter model can't do tool calling, it returns text
+// containing ```lang\n...\n``` blocks. This parser extracts them so we
+// can write the code to disk automatically — no tool call needed.
+interface MarkdownCodeBlock {
+    language: string;
+    content: string;
+    filePath: string;
+}
+
+/** Language tag → default file extension mapping. */
+const LANG_EXTENSIONS: Record<string, string> = {
+    javascript: 'js', js: 'js', jsx: 'jsx',
+    typescript: 'ts', ts: 'ts', tsx: 'tsx',
+    python: 'py', py: 'py',
+    html: 'html', htm: 'html',
+    css: 'css', scss: 'scss', less: 'less',
+    json: 'json', yaml: 'yaml', yml: 'yaml',
+    markdown: 'md', md: 'md',
+    bash: 'sh', sh: 'sh', shell: 'sh',
+    go: 'go', rust: 'rs', rs: 'rs',
+    java: 'java', c: 'c', cpp: 'cpp', 'c++': 'cpp',
+    php: 'php', ruby: 'rb', rb: 'rb',
+    sql: 'sql', xml: 'xml',
+};
+
+/** Parse markdown code blocks from LLM text output.
+ *  Each block's file path is inferred from:
+ *  1. A `path:` / `file:` comment in the first 3 lines
+ *  2. The language tag (e.g. ```javascript → file-N.js)
+ *  3. Fallback: file-N.txt */
+function parseMarkdownCodeBlocks(text: string, roundIndex: number): MarkdownCodeBlock[] {
+    const blocks: MarkdownCodeBlock[] = [];
+    // Match ```lang\n...\n``` (handles both ``` and ~~~ fences)
+    const fenceRegex = /(?:^|\n)(```|~~~)(\w*)\n([\s\S]*?)\n?\1/g;
+    let match: RegExpExecArray | null;
+    let blockIdx = 0;
+    while ((match = fenceRegex.exec(text)) !== null) {
+        const language = (match[2] || 'text').toLowerCase();
+        const content = match[3];
+        const filePath = inferFilePath(language, content, roundIndex, blockIdx);
+        blocks.push({ language, content, filePath });
+        blockIdx++;
+    }
+    return blocks;
+}
+
+/** Infer a file path from the code block's language and content. */
+function inferFilePath(language: string, content: string, roundIndex: number, blockIdx: number): string {
+    // Check first 5 lines for a path comment: // path: src/app.js  or  # path: src/app.py  or  <!-- path: index.html -->
+    const lines = content.split('\n').slice(0, 5);
+    for (const line of lines) {
+        const pathMatch = line.match(/(?:\/\/|#|<!--)\s*(?:path|file|filename)\s*[:=]\s*([^\s*<]+)/i);
+        if (pathMatch && pathMatch[1]) {
+            return pathMatch[1].replace(/^\.\//, '').replace(/["']/g, '');
+        }
+    }
+    // Fallback: use language extension
+    const ext = LANG_EXTENSIONS[language] ?? 'txt';
+    return `file-r${roundIndex + 1}-${blockIdx + 1}.${ext}`;
+}
+
+/** Check if text looks like a completion/summary message (no code to extract). */
+function looksLikeCompletion(text: string): boolean {
+    const lower = text.toLowerCase();
+    const completionPhrases = [
+        'task complete', 'task completed', 'mission complete', 'mission completed',
+        'all done', 'i am done', 'i\'m done', 'finished',
+        'i have finished', 'the milestone is complete',
+    ];
+    // Must NOT contain a code fence
+    if (/```|~~~/.test(text)) { return false; }
+    // Must contain a completion phrase
+    return completionPhrases.some(p => lower.includes(p));
+}
 
 /**
  * Configuration for the agent loop. Replaces the 22 DI deps.
@@ -348,35 +429,26 @@ export class AgentLoop {
 
                                 const ctx = this.getToolContext();
                                 const result = await executeTool(event.toolName, (event.toolInput ?? {}) as Record<string, unknown>, ctx, false);
-                                const success = result.success;
 
-                                // If this was a write/edit, fire approval_request and wait for callback
-                                if ((event.toolName === 'write_file' || event.toolName === 'edit_file') && success) {
+                                // MVP FIX: removed approval gate. For the MVP, the
+                                // agent writes files immediately without waiting for
+                                // user approval. The staging layer still validates
+                                // paths and content, but auto-applies on success.
+                                if ((event.toolName === 'write_file' || event.toolName === 'edit_file') && result.success) {
                                     const input = (event.toolInput ?? {}) as { path?: string };
                                     if (input.path) {
                                         const staged = this._pendingChanges.getStagedChange(input.path);
                                         if (staged) {
-                                            yield {
-                                                type: 'approval_request',
-                                                filePath: input.path,
-                                                proposedContent: staged.proposedContent,
-                                                existingContent: staged.existingContent,
-                                            };
-                                            const approved = this.config.approveWrite
-                                                ? await this.config.approveWrite(input.path, staged.proposedContent, staged.existingContent)
-                                                : true; // test-only auto-approve
-                                            if (approved) {
-                                                await this._pendingChanges.applyStagedChange(input.path);
-                                                yield { type: 'file_written', filePath: input.path };
-                                            } else {
-                                                this._pendingChanges.clearStagedChange(input.path);
-                                                result.output = `Error: User rejected the proposed write to ${input.path}. Re-plan or ask the user for clarification.`;
-                                            }
+                                            // MVP FIX: auto-apply immediately. No
+                                            // approval_request event, no approveWrite
+                                            // callback, no waiting.
+                                            await this._pendingChanges.applyStagedChange(input.path);
+                                            yield { type: 'file_written', filePath: input.path };
                                         }
                                     }
                                 }
 
-                                yield { type: 'tool_result', toolId: event.toolId, toolName: event.toolName, result: result.output, success: result.success && (event.toolName !== 'write_file' && event.toolName !== 'edit_file' ? true : !result.output.startsWith('Error:')) };
+                                yield { type: 'tool_result', toolId: event.toolId, toolName: event.toolName, result: result.output, success: result.success };
 
                                 // Append to conversation
                                 conversationMessages.push({
@@ -407,17 +479,97 @@ export class AgentLoop {
                     });
                 }
 
-                // Accept both Anthropic ('end_turn') and OpenAI-compat ('stop') end-of-turn signals
-                if (!hasToolCalls || stopReason === 'end_turn' || stopReason === 'stop') {
-                    this._conversationHistory.push(
-                        { role: 'user', content: task },
-                        { role: 'assistant', content: finalSummary },
-                    );
-                    this._executionState = ExecutionState.Complete;
-                    yield { type: 'complete', summary: finalSummary || 'Task completed.' };
-                    this._isRunning = false;
-                    return;
+                // MVP FIX: accept 'tool_calls' stop reason from OpenAI-compat
+                // providers (OpenRouter, Groq, etc.) as a continuation signal.
+                // Previously only 'tool_use' (Anthropic) was accepted, so
+                // OpenRouter tool calls caused the loop to exit prematurely.
+                if (hasToolCalls && (stopReason === 'tool_use' || stopReason === 'tool_calls')) {
+                    // Tool calls happened — results already pushed during
+                    // tool_end handling. Continue to next round.
+                    continue;
                 }
+
+                // MVP FIX: markdown code-block fallback.
+                // If the LLM returned text with code blocks (common with free
+                // OpenRouter models that don't support function calling),
+                // parse the blocks and write each to disk automatically.
+                if (!hasToolCalls && currentText) {
+                    const codeBlocks = parseMarkdownCodeBlocks(currentText, roundCount - 1);
+                    if (codeBlocks.length > 0) {
+                        const ctx = this.getToolContext();
+                        for (const block of codeBlocks) {
+                            try {
+                                const writeResult = await executeTool('write_file', { path: block.filePath, content: block.content }, ctx, false);
+                                if (writeResult.success) {
+                                    // Auto-apply the staged write immediately (no approval gate)
+                                    const staged = this._pendingChanges.getStagedChange(block.filePath);
+                                    if (staged) {
+                                        await this._pendingChanges.applyStagedChange(block.filePath);
+                                    }
+                                    yield { type: 'file_written', filePath: block.filePath };
+                                    yield { type: 'tool_result', toolId: 'markdown-fallback', toolName: 'write_file', result: `Wrote ${block.filePath} (${block.content.length} chars)`, success: true };
+                                } else {
+                                    yield { type: 'tool_result', toolId: 'markdown-fallback', toolName: 'write_file', result: writeResult.output, success: false };
+                                }
+                            } catch (err) {
+                                const msg = err instanceof Error ? err.message : String(err);
+                                yield { type: 'error', text: `Failed to write ${block.filePath}: ${msg}`, recoverable: true };
+                            }
+                        }
+                        // Push the assistant message + a synthetic tool result so
+                        // the next round's conversation is valid.
+                        conversationMessages.push({
+                            role: 'tool',
+                            content: `Wrote ${codeBlocks.length} file(s) via markdown fallback: ${codeBlocks.map(b => b.filePath).join(', ')}. If all files are written, say "done" and stop.`,
+                            toolCallId: 'markdown-fallback',
+                        });
+                        // If the LLM also said "done" (stop/end_turn), break.
+                        // Otherwise continue for another round.
+                        if (stopReason === 'end_turn' || stopReason === 'stop' || stopReason === 'length') {
+                            this._conversationHistory.push(
+                                { role: 'user', content: task },
+                                { role: 'assistant', content: finalSummary },
+                            );
+                            this._executionState = ExecutionState.Complete;
+                            yield { type: 'complete', summary: finalSummary || 'Task completed.' };
+                            this._isRunning = false;
+                            return;
+                        }
+                        continue;
+                    }
+
+                    // No code blocks, no tool calls. Check if it's a completion message.
+                    if (looksLikeCompletion(currentText) || stopReason === 'end_turn' || stopReason === 'stop') {
+                        this._conversationHistory.push(
+                            { role: 'user', content: task },
+                            { role: 'assistant', content: finalSummary },
+                        );
+                        this._executionState = ExecutionState.Complete;
+                        yield { type: 'complete', summary: finalSummary || 'Task completed.' };
+                        this._isRunning = false;
+                        return;
+                    }
+
+                    // MVP FIX: re-prompt. The LLM returned text without code
+                    // blocks and without a completion signal. Ask it to output
+                    // code in a markdown block so the fallback can write it.
+                    conversationMessages.push({
+                        role: 'user',
+                        content: 'You have not written any code yet. Output the code for this milestone in a markdown code block. Put the file path in a comment on the first line (e.g. // path: src/app.js). Do not explain — just output the code.',
+                    });
+                    continue;
+                }
+
+                // MVP FIX: if we get here with no tool calls, no code blocks,
+                // and no text, it's an empty response. Break to avoid looping.
+                this._conversationHistory.push(
+                    { role: 'user', content: task },
+                    { role: 'assistant', content: finalSummary },
+                );
+                this._executionState = ExecutionState.Complete;
+                yield { type: 'complete', summary: finalSummary || 'Task completed.' };
+                this._isRunning = false;
+                return;
             }
 
             this._executionState = ExecutionState.Complete;
@@ -497,20 +649,14 @@ export class AgentLoop {
                                     yield { type: 'tool_executing', toolId: event.toolId, toolName: event.toolName, detail: 'Executing...' };
                                     const ctx = this.getToolContext();
                                     const result = await executeTool(event.toolName, (event.toolInput ?? {}) as Record<string, unknown>, ctx, false);
+                                    // MVP FIX: auto-apply staged writes immediately (no approval gate)
                                     if ((event.toolName === 'write_file' || event.toolName === 'edit_file') && result.success) {
                                         const input = (event.toolInput ?? {}) as { path?: string };
                                         if (input.path) {
                                             const staged = this._pendingChanges.getStagedChange(input.path);
                                             if (staged) {
-                                                yield { type: 'approval_request', filePath: input.path, proposedContent: staged.proposedContent, existingContent: staged.existingContent };
-                                                const approved = this.config.approveWrite ? await this.config.approveWrite(input.path, staged.proposedContent, staged.existingContent) : true;
-                                                if (approved) {
-                                                    await this._pendingChanges.applyStagedChange(input.path);
-                                                    yield { type: 'file_written', filePath: input.path };
-                                                } else {
-                                                    this._pendingChanges.clearStagedChange(input.path);
-                                                    result.output = `Error: User rejected write to ${input.path}.`;
-                                                }
+                                                await this._pendingChanges.applyStagedChange(input.path);
+                                                yield { type: 'file_written', filePath: input.path };
                                             }
                                         }
                                     }
@@ -537,7 +683,40 @@ export class AgentLoop {
                             toolCalls: assistantToolCalls.length > 0 ? assistantToolCalls : undefined,
                         });
                     }
-                    if (!hasToolCalls || stopReason === 'end_turn' || stopReason === 'stop') { return; }
+                    // MVP FIX: accept 'tool_calls' stop reason + markdown fallback
+                    if (hasToolCalls && (stopReason === 'tool_use' || stopReason === 'tool_calls')) {
+                        continue;
+                    }
+                    if (!hasToolCalls && currentText) {
+                        const codeBlocks = parseMarkdownCodeBlocks(currentText, roundCount - 1);
+                        if (codeBlocks.length > 0) {
+                            const ctx = this.getToolContext();
+                            for (const block of codeBlocks) {
+                                try {
+                                    const writeResult = await executeTool('write_file', { path: block.filePath, content: block.content }, ctx, false);
+                                    if (writeResult.success) {
+                                        const staged = this._pendingChanges.getStagedChange(block.filePath);
+                                        if (staged) { await this._pendingChanges.applyStagedChange(block.filePath); }
+                                        yield { type: 'file_written', filePath: block.filePath };
+                                    }
+                                } catch { /* error already yielded by executeTool */ }
+                            }
+                            conversationMessages.push({
+                                role: 'tool',
+                                content: `Wrote ${codeBlocks.length} file(s) via markdown fallback.`,
+                                toolCallId: 'markdown-fallback',
+                            });
+                            if (stopReason === 'end_turn' || stopReason === 'stop' || stopReason === 'length') { return; }
+                            continue;
+                        }
+                        if (looksLikeCompletion(currentText) || stopReason === 'end_turn' || stopReason === 'stop') { return; }
+                        conversationMessages.push({
+                            role: 'user',
+                            content: 'Output the code in a markdown code block with the file path in a comment on the first line.',
+                        });
+                        continue;
+                    }
+                    return;
                 }
             };
 
